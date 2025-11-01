@@ -1,12 +1,10 @@
 import os
 import pandas as pd
 
-# === CONFIGURATION ===
-input_path = "/home/arya/Documents/Pasca Stikom/BigData/Repo/DataLab/botNCC2/NCC2AllSensors.csv"
-output_path = "/home/arya/Documents/Pasca Stikom/BigData/Repo/DataLab/botNCC2/NCC2AllSensors_clean.csv"
-header_key = "StartTime"   # The first column name that identifies the header line
+input_path = "/Repo/DataLab/botNCC2/NCC2AllSensors.csv"
+output_path = "/Repo/DataLab/botNCC2/NCC2AllSensors_clean.csv"
+header_key = "StartTime"
 
-# === CLEANING FUNCTION ===
 def remove_duplicate_headers(in_path, out_path, header_key="StartTime", chunksize=500_000):
     print(f"Checking and cleaning file: {in_path}")
     print("This may take a few minutes for large files...")

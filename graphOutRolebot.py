@@ -195,8 +195,3 @@ for sensor_id in unique_sensors:
     </body>
     </html>
     """
-
-    with open(html_output, "w", encoding="utf-8") as f:
-        f.write(combined_html)
-
-    print(f"✅ Saved graph for SensorId {sensor_id}: {html_output}")

@@ -1,6 +1,6 @@
 import pandas as pd
 
-path = "/home/arya/Documents/Pasca Stikom/Resource/Dataset/NCC-2 Dataset Simultaneous Botnet Dataset/all-sensors/sensors-all.binetflow"
+path = "/Dataset/NCC-2 Dataset Simultaneous Botnet Dataset/all-sensors/sensors-all.binetflow"
 
 df = pd.read_csv(path)
 
