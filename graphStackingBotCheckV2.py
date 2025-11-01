@@ -40,7 +40,7 @@ except Exception as e:
     print(f"Warning: getConnection() failed ({e}), using direct DuckDB connection.")
     con = duckdb.connect()
 
-query = f"SELECT * FROM read_csv_auto('{csv_path}', sample_size=-1)"
+query = f"SELECT * FROM read_csv_auto('{csv_path}', sample_size=-1) WHERE Label IS NOT NULL AND SensorId = 1"
 df = con.sql(query).df()
 print(f"Loaded dataset: {len(df)} rows")
 
@@ -56,6 +56,7 @@ for c in cat_cols:
 features = [col for col in ["Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
 X = df[features].fillna(df[features].mean())
 y = df["Label"]
+
 
 # Split dataset
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
