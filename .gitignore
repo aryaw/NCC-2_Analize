@@ -1,0 +1,38 @@
+# Databases
+db/
+
+# Environment variables / secrets
+.env
+
+# Assets
+assets/*.html
+assets/outputs/*.html
+assets/*.csv
+assets/dataset/*.csv
+
+# Python cache
+libInternal/__pycache__/
+*.pyc
+
+# Virtual environment (ignore all contents)
+TempEnv/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs and temp
+*.log
+tmp/
+*.tmp
+*.bak
+
+# Jupyter / IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

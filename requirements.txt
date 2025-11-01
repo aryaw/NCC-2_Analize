@@ -1,0 +1,10 @@
+pandas
+numpy
+duckdb
+sqlalchemy
+python-dotenv
+plotly
+scikit-learn
+networkx
+flask
+tqdm
