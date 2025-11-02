@@ -103,7 +103,7 @@ def generate_plotly_evaluation_report(
             )
         ],
         layout=go.Layout(
-            title=f"📊 Model Evaluation Metrics — Sensor {sensor_id}<br><sup>Best threshold: {best_threshold}</sup>",
+            title=f"Model Evaluation Metrics — Sensor {sensor_id}<br><sup>Best threshold: {best_threshold}</sup>",
             title_x=0.5,
             xaxis=dict(title="Metrics"),
             yaxis=dict(title="Score", range=[0, 1]),
@@ -150,7 +150,7 @@ def generate_plotly_evaluation_report(
     combined.add_trace(metrics_fig.data[0], row=1, col=1)
     combined.add_trace(table_fig.data[0], row=2, col=1)
     combined.update_layout(
-        title_text=f"📈 Full Model Evaluation — Sensor {sensor_id}",
+        title_text=f"Full Model Evaluation — Sensor {sensor_id}",
         title_x=0.5,
         height=900,
         showlegend=False

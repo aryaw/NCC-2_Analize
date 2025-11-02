@@ -4,14 +4,12 @@ import pandas as pd
 import webbrowser
 from libInternal import variableDump, getConnection, setFileLocation
 
-# === Initialization ===
 fileTimeStamp, output_dir = setFileLocation()
 file_chart_svg = os.path.join(output_dir, f"NCC2Schema_{fileTimeStamp}.html")
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 
-# === Connect to DuckDB ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -19,7 +17,6 @@ except Exception as e:
     print(f"Warning: getConnection() failed ({e}), falling back to direct DuckDB connect.")
     con = duckdb.connect()
 
-# === Get schema ===
 schema_df = con.sql(f"""
 DESCRIBE SELECT * FROM read_csv_auto('{csv_path}', sample_size=-1)
 """).df()
@@ -30,7 +27,6 @@ schema_df = schema_df[['column_name', 'column_type']].rename(
 
 variableDump("Schema DataFrame", schema_df.head())
 
-# === Convert schema DataFrame to HTML table ===
 schema_html_table = schema_df.to_html(
     classes='table table-striped table-bordered table-hover', 
     index=False, 
@@ -38,7 +34,6 @@ schema_html_table = schema_df.to_html(
     escape=False
 )
 
-# === Bootstrap + DataTables HTML Template ===
 combined_html = f"""
 <html>
 <head>
@@ -93,7 +88,6 @@ combined_html = f"""
 </html>
 """
 
-# === Save and open HTML file ===
 with open(file_chart_svg, "w", encoding="utf-8") as f:
     f.write(combined_html)
 
