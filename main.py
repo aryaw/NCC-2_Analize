@@ -15,215 +15,301 @@ HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Botnet Detection Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Botnet Detection Dashboard</title>
 
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
 
-    <style>
-        body {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            margin: 0;
-            height: 100vh;
-            overflow: hidden;
-            background-color: #f9fafb;
-        }
+  <style>
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #f9fafb;
+    }
 
-        .layout {
-            display: flex;
-            height: 100vh;
-        }
+    .layout {
+      display: flex;
+      height: 100vh;
+      transition: margin-left 0.3s ease;
+    }
 
-        /* Desktop sidebar */
-        .sidebar {
-            width: 280px;
-            background: linear-gradient(180deg, #16a34a, #22c55e);
-            color: #f1f5f9;
-            overflow-y: auto;
-            flex-shrink: 0;
-        }
-        .sidebar h2 {
-            color: #fff;
-            text-align: center;
-            margin: 20px;
-            border-bottom: 2px solid #fff;
-            padding-bottom: 10px;
-        }
-        .file-list a {
-            color: #f1f5f9;
-            display: block;
-            padding: 8px 16px;
-            border-radius: 6px;
-            text-decoration: none;
-        }
-        .file-list a:hover {
-            background-color: #15803d;
-            color: #fff;
-        }
-        .file-list a.active {
-            background-color: #166534;
-            color: #fff;
-            font-weight: bold;
-        }
+    /* === Desktop Sidebar === */
+    .sidebar {
+      width: 260px;
+      background: linear-gradient(180deg, #16a34a, #22c55e);
+      color: #f1f5f9;
+      overflow-y: auto;
+      flex-shrink: 0;
+      transition: width 0.3s ease;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
 
-        /* Header */
-        .header {
-            background: linear-gradient(to right, #16a34a, #4ade80);
-            color: white;
-            padding: 12px 20px;
-            font-size: 18px;
-            font-weight: bold;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
+    .sidebar.collapsed {
+      width: 70px;
+    }
 
-        /* Seamless burger button */
-        .header button {
-            background: transparent;
-            border: none;
-            color: white;
-            font-size: 26px;
-            line-height: 1;
-            padding: 4px 10px;
-            border-radius: 6px;
-            transition: background 0.2s, transform 0.1s;
-        }
-        .header button:hover {
-            background: rgba(255, 255, 255, 0.15);
-        }
-        .header button:active {
-            transform: scale(0.9);
-        }
+    .sidebar h2 {
+      color: #fff;
+      text-align: center;
+      margin: 20px 10px;
+      border-bottom: 2px solid #fff;
+      padding-bottom: 10px;
+      transition: opacity 0.3s ease;
+      white-space: nowrap;
+      overflow: hidden;
+    }
 
-        /* Iframe */
-        iframe {
-            width: 100%;
-            height: calc(100vh - 55px);
-            border: none;
-        }
+    .sidebar.collapsed h2 {
+      opacity: 0;
+    }
 
-        /* Mobile offcanvas */
-        .offcanvas {
-            background: linear-gradient(180deg, #16a34a, #22c55e);
-            color: #f1f5f9;
-        }
-        .offcanvas h2 {
-            text-align: center;
-            color: #fff;
-            border-bottom: 2px solid #fff;
-            padding-bottom: 10px;
-        }
-        .offcanvas .btn-close {
-            filter: invert(1);
-        }
+    .file-list {
+      flex-grow: 1;
+    }
 
-        /* Hide desktop sidebar on small screens */
-        @media (max-width: 768px) {
-            .sidebar {
-                display: none;
-            }
-        }
-    </style>
+    .file-list a {
+      color: #f1f5f9;
+      display: block;
+      padding: 10px 18px;
+      border-radius: 6px;
+      text-decoration: none;
+      transition: padding 0.3s ease, background 0.2s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
-    <script>
-        async function refreshFileList() {
-            try {
-                const response = await fetch('/list_files');
-                const { files } = await response.json();
-                const lists = document.querySelectorAll('.file-list'); // desktop + mobile
-                lists.forEach(list => {
-                    const current = list.querySelector('a.active')?.textContent;
-                    list.innerHTML = '';
-                    files.forEach(file => {
-                        const li = document.createElement('li');
-                        const a = document.createElement('a');
-                        a.textContent = file;
-                        a.target = 'preview_frame';
-                        if (file.endsWith('.csv')) a.href = '/csv/' + file;
-                        else if (file.endsWith('.md')) a.href = '/md/' + file;
-                        else a.href = '/view/' + file;
-                        if (file === current) a.classList.add('active');
+    .file-list a:hover {
+      background-color: #15803d;
+      color: #fff;
+    }
 
-                        // click handler: highlight + auto close offcanvas
-                        a.onclick = function() {
-                            document.querySelectorAll('.file-list a')
-                                .forEach(link => link.classList.remove('active'));
-                            this.classList.add('active');
-                            const offcanvas = bootstrap.Offcanvas.getInstance(document.getElementById('offcanvasSidebar'));
-                            if (offcanvas) offcanvas.hide(); // auto close on mobile
-                        };
+    .file-list a.active {
+      background-color: #166534;
+      color: #fff;
+      font-weight: bold;
+    }
 
-                        li.appendChild(a);
-                        list.appendChild(li);
-                    });
-                });
-            } catch (err) { console.error(err); }
-        }
-        setInterval(refreshFileList, 10000);
-        window.onload = refreshFileList;
-    </script>
+    /* === Sidebar toggle (bottom, seamless) === */
+    .toggle-btn {
+      background: rgba(0, 0, 0, 0.1);
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
+      color: white;
+      padding: 12px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 18px;
+      transition: background 0.3s ease, transform 0.3s ease;
+    }
+
+    .toggle-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .sidebar.collapsed .toggle-btn {
+      transform: rotate(180deg);
+    }
+
+    /* === Header === */
+    .header {
+      background: linear-gradient(to right, #16a34a, #4ade80);
+      color: white;
+      padding: 12px 20px;
+      font-size: 18px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: relative;
+      z-index: 10;
+    }
+
+    .header button {
+      background: transparent;
+      border: none;
+      color: white;
+      font-size: 26px;
+      line-height: 1;
+      padding: 4px 10px;
+      border-radius: 6px;
+      transition: background 0.2s, transform 0.1s;
+    }
+    .header button:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+    .header button:active {
+      transform: scale(0.9);
+    }
+
+    iframe {
+      width: 100%;
+      height: calc(100vh - 55px);
+      border: none;
+    }
+
+    /* === Mobile Sidebar === */
+    .mobile-sidebar {
+      position: fixed;
+      top: 0;
+      left: -280px;
+      width: 280px;
+      height: 100%;
+      background: linear-gradient(180deg, #16a34a, #22c55e);
+      color: #f1f5f9;
+      overflow-y: auto;
+      transition: left 0.3s ease;
+      z-index: 20;
+    }
+
+    .mobile-sidebar.open {
+      left: 0;
+    }
+
+    .mobile-sidebar h2 {
+      text-align: center;
+      color: #fff;
+      margin: 20px;
+      border-bottom: 2px solid #fff;
+      padding-bottom: 10px;
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.3s ease;
+      z-index: 15;
+    }
+
+    .overlay.show {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* Hide desktop sidebar on small screens */
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .toggle-btn { display: none; }
+    }
+  </style>
+
+  <script>
+    async function refreshFileList() {
+      try {
+        const response = await fetch('/list_files');
+        const { files } = await response.json();
+        const lists = document.querySelectorAll('.file-list');
+        lists.forEach(list => {
+          const current = list.querySelector('a.active')?.textContent;
+          list.innerHTML = '';
+          files.forEach(file => {
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.textContent = file;
+            a.target = 'preview_frame';
+            if (file.endsWith('.csv')) a.href = '/csv/' + file;
+            else if (file.endsWith('.md')) a.href = '/md/' + file;
+            else a.href = '/view/' + file;
+            if (file === current) a.classList.add('active');
+
+            a.onclick = function() {
+              document.querySelectorAll('.file-list a')
+                .forEach(link => link.classList.remove('active'));
+              this.classList.add('active');
+              closeMobileMenu();
+            };
+
+            li.appendChild(a);
+            list.appendChild(li);
+          });
+        });
+      } catch (err) { console.error(err); }
+    }
+
+    function toggleMobileMenu() {
+      const sidebar = document.querySelector('.mobile-sidebar');
+      const overlay = document.querySelector('.overlay');
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('show');
+    }
+
+    function closeMobileMenu() {
+      document.querySelector('.mobile-sidebar').classList.remove('open');
+      document.querySelector('.overlay').classList.remove('show');
+    }
+
+    function toggleDesktopSidebar() {
+      const sidebar = document.querySelector('.sidebar');
+      sidebar.classList.toggle('collapsed');
+    }
+
+    setInterval(refreshFileList, 10000);
+    window.onload = refreshFileList;
+  </script>
 </head>
 <body>
-    <div class="header">
-        <button class="d-md-none" type="button"
-                data-bs-toggle="offcanvas" data-bs-target="#offcanvasSidebar"
-                aria-controls="offcanvasSidebar">☰</button>
-        <span>Botnet Detection Data Viewer</span>
+  <div class="header">
+    <button class="d-md-none" type="button" onclick="toggleMobileMenu()">☰</button>
+    <span>Botnet Detection Data Viewer</span>
+  </div>
+
+  <div class="overlay" onclick="closeMobileMenu()"></div>
+
+  <!-- Mobile Sidebar -->
+  <div class="mobile-sidebar d-md-none">
+    <button class="btn-close position-absolute end-0 m-3" onclick="closeMobileMenu()"></button>
+    <h2>Botnet Reports</h2>
+    <ul class="file-list list-unstyled">
+      {% for file in files %}
+      <li>
+        <a href="{{ '/csv/' + file if file.endswith('.csv')
+                    else '/md/' + file if file.endswith('.md')
+                    else '/view/' + file }}"
+           target="preview_frame">{{ file }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="layout">
+    <!-- Desktop Sidebar -->
+    <div class="sidebar d-none d-md-flex flex-column">
+      <div>
+        <h2>Botnet Reports</h2>
+        <ul class="file-list list-unstyled">
+          {% for file in files %}
+          <li>
+            <a href="{{ '/csv/' + file if file.endswith('.csv')
+                        else '/md/' + file if file.endswith('.md')
+                        else '/view/' + file }}"
+               target="preview_frame"
+               onclick="document.querySelectorAll('.file-list a')
+                            .forEach(el => el.classList.remove('active'));
+                        this.classList.add('active');">
+               {{ file }}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div class="toggle-btn d-none d-md-block" onclick="toggleDesktopSidebar()">❮</div>
     </div>
 
-    <div class="layout">
-        <!-- Desktop sidebar -->
-        <div class="sidebar d-none d-md-block">
-            <h2>Botnet Reports</h2>
-            <ul class="file-list list-unstyled">
-                {% for file in files %}
-                <li>
-                    <a href="{{ '/csv/' + file if file.endswith('.csv')
-                                else '/md/' + file if file.endswith('.md')
-                                else '/view/' + file }}"
-                       target="preview_frame"
-                       onclick="document.querySelectorAll('.file-list a')
-                                    .forEach(el => el.classList.remove('active'));
-                                this.classList.add('active');">
-                       {{ file }}
-                    </a>
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
-
-        <!-- Mobile offcanvas -->
-        <div class="offcanvas offcanvas-start" tabindex="-1" id="offcanvasSidebar">
-            <div class="offcanvas-header">
-                <h2>Botnet Reports</h2>
-                <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
-            </div>
-            <div class="offcanvas-body">
-                <ul class="file-list list-unstyled">
-                    {% for file in files %}
-                    <li>
-                        <a href="{{ '/csv/' + file if file.endswith('.csv')
-                                    else '/md/' + file if file.endswith('.md')
-                                    else '/view/' + file }}"
-                           target="preview_frame">
-                           {{ file }}
-                        </a>
-                    </li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
-
-        <!-- Main -->
-        <div class="main flex-grow-1">
-            <iframe name="preview_frame"></iframe>
-        </div>
+    <!-- Main content -->
+    <div class="main flex-grow-1">
+      <iframe name="preview_frame"></iframe>
     </div>
+  </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
