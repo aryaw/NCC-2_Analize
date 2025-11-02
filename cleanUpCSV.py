@@ -1,8 +1,10 @@
 import os
 import pandas as pd
 
-input_path = "/Repo/DataLab/botNCC2/NCC2AllSensors.csv"
-output_path = "/Repo/DataLab/botNCC2/NCC2AllSensors_clean.csv"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
+csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
+input_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors.csv")
+output_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 header_key = "StartTime"
 
 def remove_duplicate_headers(in_path, out_path, header_key="StartTime", chunksize=500_000):

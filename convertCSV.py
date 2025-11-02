@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 
 path = "/Dataset/NCC-2 Dataset Simultaneous Botnet Dataset/all-sensors/sensors-all.binetflow"
 

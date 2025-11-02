@@ -8,7 +8,8 @@ from libInternal import variableDump, getConnection, setFileLocation
 fileTimeStamp, output_dir = setFileLocation()
 file_chart_svg = os.path.join(output_dir, f"NCC2Schema_{fileTimeStamp}.html")
 
-csv_path = "/home/arya/Documents/Pasca Stikom/BigData/Repo/DataLab/botNCC2/NCC2AllSensors_clean.csv"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
+csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 
 # === Connect to DuckDB ===
 try:
