@@ -49,7 +49,8 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMBA_NUM_THREADS"] = "1"
 
 SELECTED_SENSOR_ID = "1"
-fileTimeStamp, output_dir = setExportDataLocation()
+fileTimeStamp, output_dir = setFileLocation()
+fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
@@ -195,8 +196,8 @@ except Exception as e:
 print(f"[Report] -> {report_path}")
 
 # save data splits
-train_csv = os.path.join(output_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
-test_csv = os.path.join(output_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
+train_csv = os.path.join(outputdata_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
+test_csv = os.path.join(outputdata_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
 pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, index=False)
 print(f"[Export] train -> {train_csv}")
