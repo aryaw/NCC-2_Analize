@@ -203,20 +203,20 @@ def generate_plotly_evaluation_report_smote(y_true, y_pred, y_prob, sensor_id, b
     fig.update_yaxes(title_text="Precision", row=1, col=1)
 
     # ROC curve
-    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name="ROC Curve (AUC={:.3f})".format(roc_auc_val), line=dict(width=2)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name=f"ROC Curve (AUC={roc_auc_val:.3f})", line=dict(width=2)), row=1, col=2)
     fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random Guess", line=dict(dash="dash")), row=1, col=2)
+    
     fig.update_xaxes(title_text="False Positive Rate", row=1, col=2)
     fig.update_yaxes(title_text="True Positive Rate", row=1, col=2)
 
-    # Add metrics summary box
     text_metrics = "<br>".join([f"<b>{k}:</b> {v:.4f}" if k != "Accuracy" else f"<b>{k}:</b> {v:.2f}%" for k, v in metrics.items()])
     fig.add_annotation(
-        text=f"<b>Sensor {sensor_id} Evaluation Summary</b><br>{text_metrics}<br><br><b>Best Threshold:</b> {best_threshold:.3f}",
+        text=f"<b>Sensor {sensor_id} Evaluation Summary (SMOTE)</b><br>{text_metrics}<br><br><b>Best Threshold:</b> {best_threshold:.3f}",
         xref="paper", yref="paper", x=0.5, y=-0.2, showarrow=False, align="left"
     )
 
     fig.update_layout(
-        title=f"Evaluation Dashboard - Sensor {sensor_id}",
+        title=f"Evaluation Dashboard (SMOTE) - Sensor {sensor_id}",
         title_x=0.5,
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -228,4 +228,5 @@ def generate_plotly_evaluation_report_smote(y_true, y_pred, y_prob, sensor_id, b
     fig.write_html(html_path)
     print(f"[Report] Saved -> {html_path}")
     return html_path
+
 
