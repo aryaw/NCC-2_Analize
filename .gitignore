@@ -10,6 +10,7 @@ assets/outputs/*.html
 assets/*.csv
 assets/dataset/*.csv
 assets/outputsData/*.csv
+assets/outputsData/*.html
 
 # Python cache
 libInternal/__pycache__/
