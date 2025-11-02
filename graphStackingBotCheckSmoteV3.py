@@ -9,14 +9,15 @@ import networkx as nx
 import traceback
 import re
 from datetime import datetime
+from imblearn.over_sampling import SMOTE
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.ensemble import (
     RandomForestClassifier,
     HistGradientBoostingClassifier,
-    ExtraTreesClassifier,
     StackingClassifier,
 )
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     classification_report,
     precision_recall_curve,
@@ -32,16 +33,16 @@ from libInternal import (
     setExportDataLocation,
     optimize_dataframe,
     fast_label_to_binary,
-    generate_plotly_evaluation_report
+    generate_plotly_evaluation_report_smote,
 )
 
-# job limit
 os.environ["JOBLIB_TEMP_FOLDER"] = "/tmp"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
+# conf
 SELECTED_SENSOR_ID = "1"
 fileTimeStamp, output_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
@@ -71,39 +72,35 @@ if df.empty:
 df = optimize_dataframe(df)
 print(f"[Load] memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
 
+# label convert
 df = fast_label_to_binary(df)
-
 print("\n[DEBUG] Label distribution after conversion for Sensor:", SELECTED_SENSOR_ID)
 print(df["Label"].value_counts())
 print("\n[DEBUG] Group by Label for Sensor:", SELECTED_SENSOR_ID)
 print(df[["SensorId", "Label"]].groupby("Label").size())
 
-# Safety check for binary class existence
 if df["Label"].nunique() < 2:
     raise RuntimeError(f"Sensor {SELECTED_SENSOR_ID} contains only one class — cannot train classifier.")
 
-# drop irrelevant/missing features
+# clean & encode
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
-
-# encode categorycal
 cat_cols = ["Proto", "Dir", "State"]
 for c in cat_cols:
     if c in df.columns:
         df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-# feature
+# feature selection
 features = [col for col in ["Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
 if not features:
     raise RuntimeError("No valid numeric features found in dataset!")
 print(f"[Features] Using features ({len(features)}): {features}")
 
-# split data train 80/test 20
+# split train 80/test 20
 X = df[features].fillna(df[features].mean())
 y = df["Label"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 y_train = np.asarray(y_train).astype(int)
 y_test = np.asarray(y_test).astype(int)
-
 print("[Split] y_train distribution:", np.bincount(y_train))
 print("[Split] y_test distribution:", np.bincount(y_test))
 
@@ -112,12 +109,19 @@ scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# ensemble model
+# smote balancing
+print("\n[SMOTE] Balancing classes for better recall performance...")
+sm = SMOTE(random_state=42)
+X_train_balanced, y_train_balanced = sm.fit_resample(X_train_scaled, y_train)
+print("[SMOTE] Before:", np.bincount(y_train))
+print("[SMOTE] After :", np.bincount(y_train_balanced))
+
+# esemble model
 base_learners = [
-    ("rf", RandomForestClassifier(n_estimators=100, max_depth=10, class_weight="balanced", random_state=42, n_jobs=1)),
-    ("hgb", HistGradientBoostingClassifier(max_depth=8, random_state=42))
+    ("rf", RandomForestClassifier(n_estimators=150, max_depth=12, class_weight="balanced", random_state=42, n_jobs=1)),
+    ("hgb", HistGradientBoostingClassifier(max_depth=10, learning_rate=0.05, random_state=42))
 ]
-meta = ExtraTreesClassifier(n_estimators=50, max_depth=8, random_state=42, n_jobs=1)
+meta = LogisticRegression(class_weight="balanced", max_iter=500, solver="liblinear", random_state=42)
 
 stack = StackingClassifier(
     estimators=base_learners,
@@ -128,33 +132,41 @@ stack = StackingClassifier(
     verbose=1
 )
 
-# train
+# train model
 print(f"\n[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 try:
-    stack.fit(X_train_scaled, y_train)
+    stack.fit(X_train_balanced, y_train_balanced)
     print("[Train] Done.")
 except Exception:
     print("[Train] Exception during stack.fit():")
     traceback.print_exc()
 
-# check score
+# evaluation error
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
 prec, rec, thr = precision_recall_curve(y_test, p_test)
 f1s = 2 * prec * rec / (prec + rec + 1e-12)
 best_idx = np.nanargmax(f1s)
 best_threshold = thr[best_idx] if best_idx < len(thr) else 0.5
+best_threshold = max(0.3, best_threshold - 0.05)
 y_pred_test = (p_test >= best_threshold).astype(int)
 
-print("\n# Evaluation for Sensor:", SELECTED_SENSOR_ID)
-print("Best threshold:", round(best_threshold, 3))
-print("Accuracy:", round((y_pred_test == y_test).mean() * 100, 2), "%")
-print("Precision:", precision_score(y_test, y_pred_test))
-print("Recall:", recall_score(y_test, y_pred_test))
-print("F1 Score:", f1_score(y_test, y_pred_test))
-print("ROC-AUC:", roc_auc_score(y_test, p_test))
+# metric sumary
+accuracy = round((y_pred_test == y_test).mean() * 100, 2)
+precision = precision_score(y_test, y_pred_test)
+recall = recall_score(y_test, y_pred_test)
+f1 = f1_score(y_test, y_pred_test)
+roc_auc = roc_auc_score(y_test, p_test)
+
+print(f"\n# Evaluation for Sensor: {SELECTED_SENSOR_ID}")
+print(f"Best threshold: {best_threshold:.3f}")
+print(f"Accuracy: {accuracy}%")
+print(f"Precision: {precision:.3f}")
+print(f"Recall: {recall:.3f}")
+print(f"F1 Score: {f1:.3f}")
+print(f"ROC-AUC: {roc_auc:.3f}")
 print("\nClassification Report:\n", classification_report(y_test, y_pred_test, digits=4))
 
-report_paths = generate_plotly_evaluation_report(
+report_path = generate_plotly_evaluation_report_smote(
     y_true=y_test,
     y_pred=y_pred_test,
     y_prob=p_test,
@@ -164,7 +176,7 @@ report_paths = generate_plotly_evaluation_report(
     file_timestamp=fileTimeStamp
 )
 
-# export train/test for log
+# export train/test ke csv
 train_csv = os.path.join(output_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv = os.path.join(output_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
@@ -239,4 +251,4 @@ html_output = os.path.join(graph_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_G
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
 
-print(f"\nDone. Model trained and graph generated for Sensor {SELECTED_SENSOR_ID}.")
+print(f"\nDone. Model trained and evaluation dashboard generated for Sensor {SELECTED_SENSOR_ID}.")

@@ -1,5 +1,20 @@
+import os
 import re
 import pandas as pd
+import numpy as np
+import plotly.subplots as sp
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from sklearn.metrics import (
+    classification_report,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+    precision_recall_curve,
+    roc_curve,
+    auc,
+)
 
 def optimize_dataframe(df):
     """downcast numeric columns to save memory."""
@@ -13,7 +28,6 @@ def fast_label_to_binary(df):
     """Convert 'Label' column to binary (1=bot/attack/malicious, 0=normal/benign) using regex matching."""
     labels_str = df["Label"].astype(str).str.lower().fillna("")
 
-    # Flexible regex patterns
     bot_pattern = re.compile(
         r"\b(bot|botnet|cnc|c&c|malware|infected|attack|spam|ddos|trojan|worm|zombie|backdoor)\b",
         re.IGNORECASE,
@@ -54,3 +68,164 @@ def fast_label_to_binary(df):
     df["Label"] = df["Label"].astype(int)
     print("[Label] value counts:\n", df["Label"].value_counts())
     return df
+
+def generate_plotly_evaluation_report(
+    y_true,
+    y_pred,
+    y_prob,
+    sensor_id="Unknown",
+    best_threshold=None,
+    output_dir=".",
+    file_timestamp=None
+):
+
+    # === Compute metrics ===
+    accuracy = round((y_pred == y_true).mean() * 100, 2)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+    roc_auc = roc_auc_score(y_true, y_prob)
+
+    metrics_df = pd.DataFrame({
+        "Metric": ["Accuracy", "Precision", "Recall", "F1 Score", "ROC-AUC"],
+        "Score": [accuracy / 100, precision, recall, f1, roc_auc]
+    })
+
+    # bar chart
+    metrics_fig = go.Figure(
+        data=[
+            go.Bar(
+                x=metrics_df["Metric"],
+                y=metrics_df["Score"],
+                text=[f"{v:.3f}" for v in metrics_df["Score"]],
+                textposition="auto",
+                marker_color="#2e86de"
+            )
+        ],
+        layout=go.Layout(
+            title=f"📊 Model Evaluation Metrics — Sensor {sensor_id}<br><sup>Best threshold: {best_threshold}</sup>",
+            title_x=0.5,
+            xaxis=dict(title="Metrics"),
+            yaxis=dict(title="Score", range=[0, 1]),
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            font=dict(size=13),
+            height=500
+        )
+    )
+
+    # report table
+    report = classification_report(y_true, y_pred, digits=4, output_dict=True)
+    report_df = pd.DataFrame(report).transpose().round(4).reset_index().rename(columns={"index": "Class"})
+
+    table_fig = go.Figure(
+        data=[
+            go.Table(
+                header=dict(
+                    values=list(report_df.columns),
+                    fill_color="paleturquoise",
+                    align="center"
+                ),
+                cells=dict(
+                    values=[report_df[c] for c in report_df.columns],
+                    fill_color="lavender",
+                    align="center"
+                )
+            )
+        ],
+        layout=go.Layout(
+            title=f"🧾 Classification Report — Sensor {sensor_id}",
+            title_x=0.5,
+            height=600
+        )
+    )
+
+    # merge report
+    combined = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=("Evaluation Metrics", "Classification Report"),
+        row_heights=[0.4, 0.6],
+        specs=[[{"type": "xy"}], [{"type": "table"}]]
+    )
+    combined.add_trace(metrics_fig.data[0], row=1, col=1)
+    combined.add_trace(table_fig.data[0], row=2, col=1)
+    combined.update_layout(
+        title_text=f"📈 Full Model Evaluation — Sensor {sensor_id}",
+        title_x=0.5,
+        height=900,
+        showlegend=False
+    )
+
+    # save
+    if not file_timestamp:
+        import datetime
+        file_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    metrics_html = os.path.join(output_dir, f"Metrics_Sensor{sensor_id}_{file_timestamp}.html")
+    table_html = os.path.join(output_dir, f"ClassReport_Sensor{sensor_id}_{file_timestamp}.html")
+    combined_html = os.path.join(output_dir, f"FullReport_Sensor{sensor_id}_{file_timestamp}.html")
+
+    metrics_fig.write_html(metrics_html)
+    table_fig.write_html(table_html)
+    combined.write_html(combined_html)
+
+    print(f"[Report] Metrics saved -> {metrics_html}")
+    print(f"[Report] Table saved   -> {table_html}")
+    print(f"[Report] Combined saved -> {combined_html}")
+
+    return {
+        "metrics": metrics_html,
+        "table": table_html,
+        "combined": combined_html
+    }
+
+def generate_plotly_evaluation_report_smote(y_true, y_pred, y_prob, sensor_id, best_threshold, output_dir, file_timestamp):
+    """Generate Precision-Recall curve, ROC curve, and metric summary dashboard."""
+    prec, rec, _ = precision_recall_curve(y_true, y_prob)
+    fpr, tpr, _ = roc_curve(y_true, y_prob)
+    roc_auc_val = auc(fpr, tpr)
+
+    metrics = {
+        "Accuracy": round((y_pred == y_true).mean() * 100, 2),
+        "Precision": precision_score(y_true, y_pred),
+        "Recall": recall_score(y_true, y_pred),
+        "F1 Score": f1_score(y_true, y_pred),
+        "ROC-AUC": roc_auc_val
+    }
+
+    fig = sp.make_subplots(rows=1, cols=2, subplot_titles=("Precision-Recall Curve", "ROC Curve"))
+
+    # PR curve
+    fig.add_trace(go.Scatter(x=rec, y=prec, mode="lines", name="PR Curve", line=dict(width=2)), row=1, col=1)
+    fig.update_xaxes(title_text="Recall", row=1, col=1)
+    fig.update_yaxes(title_text="Precision", row=1, col=1)
+
+    # ROC curve
+    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name="ROC Curve (AUC={:.3f})".format(roc_auc_val), line=dict(width=2)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random Guess", line=dict(dash="dash")), row=1, col=2)
+    fig.update_xaxes(title_text="False Positive Rate", row=1, col=2)
+    fig.update_yaxes(title_text="True Positive Rate", row=1, col=2)
+
+    # Add metrics summary box
+    text_metrics = "<br>".join([f"<b>{k}:</b> {v:.4f}" if k != "Accuracy" else f"<b>{k}:</b> {v:.2f}%" for k, v in metrics.items()])
+    fig.add_annotation(
+        text=f"<b>Sensor {sensor_id} Evaluation Summary</b><br>{text_metrics}<br><br><b>Best Threshold:</b> {best_threshold:.3f}",
+        xref="paper", yref="paper", x=0.5, y=-0.2, showarrow=False, align="left"
+    )
+
+    fig.update_layout(
+        title=f"Evaluation Dashboard - Sensor {sensor_id}",
+        title_x=0.5,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        height=600,
+        width=1100
+    )
+
+    html_path = os.path.join(output_dir, f"EvaluationReport_Sensor{sensor_id}_SMOTE_{file_timestamp}.html")
+    fig.write_html(html_path)
+    print(f"[Report] Saved -> {html_path}")
+    return html_path
+
