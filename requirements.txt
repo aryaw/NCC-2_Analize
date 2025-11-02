@@ -3,9 +3,13 @@ numpy
 duckdb
 sqlalchemy
 python-dotenv
-plotly
 scikit-learn
+imbalanced-learn
+joblib
+plotly
 networkx
 flask
 markdown
 tqdm
+psutil
+numexpr
