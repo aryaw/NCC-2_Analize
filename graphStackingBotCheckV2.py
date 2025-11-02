@@ -7,7 +7,7 @@ import numpy as np
 import plotly.graph_objects as go
 import networkx as nx
 import traceback
-import re  # 🔧 CHANGED: added regex support
+import re
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
@@ -25,18 +25,23 @@ from sklearn.metrics import (
     f1_score,
     roc_auc_score,
 )
-from libInternal import variableDump, getConnection, setFileLocation, setExportDataLocation
+from libInternal import (
+    variableDump,
+    getConnection,
+    setFileLocation,
+    setExportDataLocation,
+    optimize_dataframe,
+    fast_label_to_binary,
+)
 
-# === JOB LIMITS TO AVOID CPU OVERLOAD ===
+# job limit
 os.environ["JOBLIB_TEMP_FOLDER"] = "/tmp"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
-# === SELECT SENSOR ID ===
 SELECTED_SENSOR_ID = "1"
-
 
 def optimize_dataframe(df):
     """Downcast numeric columns to save memory."""
@@ -47,7 +52,6 @@ def optimize_dataframe(df):
     return df
 
 
-# 🔧 CHANGED: Improved label mapping with regex
 def fast_label_to_binary(df):
     """Convert 'Label' column to binary (1=bot/attack/malicious, 0=normal/benign) using regex matching."""
     labels_str = df["Label"].astype(str).str.lower().fillna("")
@@ -86,14 +90,11 @@ def fast_label_to_binary(df):
     return df
 
 
-# === PATH SETUP ===
 fileTimeStamp, output_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
-os.makedirs(graph_dir, exist_ok=True)
 
-# === LOAD DATA (Single Sensor) ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -117,7 +118,6 @@ if df.empty:
 df = optimize_dataframe(df)
 print(f"[Load] memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
 
-# === BINARY LABEL MAPPING ===
 df = fast_label_to_binary(df)
 
 print("\n[DEBUG] Label distribution after conversion for Sensor:", SELECTED_SENSOR_ID)
@@ -129,23 +129,22 @@ print(df[["SensorId", "Label"]].groupby("Label").size())
 if df["Label"].nunique() < 2:
     raise RuntimeError(f"Sensor {SELECTED_SENSOR_ID} contains only one class — cannot train classifier.")
 
-# Drop irrelevant/missing features
+# drop irrelevant/missing features
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
 
-# === ENCODE CATEGORICAL FEATURES ===
+# encode categorycal
 cat_cols = ["Proto", "Dir", "State"]
 for c in cat_cols:
     if c in df.columns:
         df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-# === FEATURES ===
+# feature
 features = [col for col in ["Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
 if not features:
     raise RuntimeError("No valid numeric features found in dataset!")
-
 print(f"[Features] Using features ({len(features)}): {features}")
 
-# === SPLIT TRAIN/TEST ===
+# split data train 80/test 20
 X = df[features].fillna(df[features].mean())
 y = df["Label"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
@@ -155,12 +154,12 @@ y_test = np.asarray(y_test).astype(int)
 print("[Split] y_train distribution:", np.bincount(y_train))
 print("[Split] y_test distribution:", np.bincount(y_test))
 
-# === SCALING ===
+# scaling
 scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# === DEFINE ENSEMBLE MODEL ===
+# ensemble model
 base_learners = [
     ("rf", RandomForestClassifier(n_estimators=100, max_depth=10, class_weight="balanced", random_state=42, n_jobs=1)),
     ("hgb", HistGradientBoostingClassifier(max_depth=8, random_state=42))
@@ -176,7 +175,7 @@ stack = StackingClassifier(
     verbose=1
 )
 
-# === TRAIN MODEL ===
+# train
 print(f"\n[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 try:
     stack.fit(X_train_scaled, y_train)
@@ -185,7 +184,7 @@ except Exception:
     print("[Train] Exception during stack.fit():")
     traceback.print_exc()
 
-# === EVALUATION ===
+# check score
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
 prec, rec, thr = precision_recall_curve(y_test, p_test)
 f1s = 2 * prec * rec / (prec + rec + 1e-12)
@@ -202,7 +201,7 @@ print("F1 Score:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 print("\nClassification Report:\n", classification_report(y_test, y_pred_test, digits=4))
 
-# === EXPORT TRAIN/TEST DATA ===
+# export train/test for log
 train_csv = os.path.join(output_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv = os.path.join(output_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
@@ -210,15 +209,14 @@ pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, in
 print(f"[Export] train -> {train_csv}")
 print(f"[Export] test  -> {test_csv}")
 
-# === APPLY MODEL TO ALL DATA ===
+# apply model
 df_scaled = scaler.transform(df[features])
 df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 df["PredictedRole"] = df["PredictedLabel"].apply(lambda x: "Botnet" if x == 1 else "Normal")
 
-# === GRAPH VISUALIZATION ===
+# generate graph
 print(f"[Graph] Generating visualization for Sensor {SELECTED_SENSOR_ID} with {len(df)} edges...")
-
 G = nx.from_pandas_edgelist(df, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
 
 node_roles = {}
@@ -278,4 +276,4 @@ html_output = os.path.join(graph_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_G
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
 
-print(f"\n✅ Done. Model trained and graph generated for Sensor {SELECTED_SENSOR_ID}.")
+print(f"\nDone. Model trained and graph generated for Sensor {SELECTED_SENSOR_ID}.")
