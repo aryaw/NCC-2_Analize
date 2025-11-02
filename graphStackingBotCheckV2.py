@@ -41,9 +41,12 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMBA_NUM_THREADS"] = "1"
 
 SELECTED_SENSOR_ID = "1"
-fileTimeStamp, output_dir = setExportDataLocation()
+fileTimeStamp, output_dir = setFileLocation()
+fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
@@ -78,6 +81,32 @@ print(df["Label"].value_counts())
 print("\n[DEBUG] Group by Label for Sensor:", SELECTED_SENSOR_ID)
 print(df[["SensorId", "Label"]].groupby("Label").size())
 
+# keep all minority rows, sample majority to (minority_count * ratio) capped at max_major
+counts = df["Label"].value_counts()
+if len(counts) > 1:
+    minority_label = counts.idxmin()
+    majority_label = counts.idxmax()
+    minority_count = counts.min()
+    majority_count = counts.max()
+    ratio = 5                  # how many majority rows per minority row to keep
+    max_major = 800_000        # absolute cap for majority rows (tune as needed)
+    desired_major = min(max(int(minority_count * ratio), minority_count), max_major)
+
+    if majority_count > desired_major:
+        print(f"[Downsample] minority={minority_count:,}, majority={majority_count:,} -> sampling majority to {desired_major:,}")
+        df_min = df[df["Label"] == minority_label]
+        df_maj = df[df["Label"] == majority_label].sample(n=desired_major, random_state=42)
+        
+        # if there are more than 2 labels (unlikely), keep other labels as-is
+        other = df[~df["Label"].isin([minority_label, majority_label])]
+        df = pd.concat([df_min, df_maj, other], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
+        gc.collect()
+        print(f"[Downsample] New dataset size: {len(df):,}")
+    else:
+        print(f"[Downsample] No downsampling needed (majority {majority_count:,} <= desired {desired_major:,})")
+else:
+    print("[Downsample] Only one class present (handled later)")
+
 # Safety check for binary class existence
 if df["Label"].nunique() < 2:
     raise RuntimeError(f"Sensor {SELECTED_SENSOR_ID} contains only one class — cannot train classifier.")
@@ -100,10 +129,11 @@ print(f"[Features] Using features ({len(features)}): {features}")
 # split data train 80/test 20
 X = df[features].fillna(df[features].mean())
 y = df["Label"]
+
+y = np.rint(y).astype(int)   # cast labels to discrete ints
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 y_train = np.asarray(y_train).astype(int)
 y_test = np.asarray(y_test).astype(int)
-
 print("[Split] y_train distribution:", np.bincount(y_train))
 print("[Split] y_test distribution:", np.bincount(y_test))
 
@@ -112,12 +142,23 @@ scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
+# ensure integer labels
+y_train = np.rint(y_train).astype(int)
+y_test = np.rint(y_test).astype(int)
+print("[Check] Unique y_train labels:", np.unique(y_train))
+
 # ensemble model
+# base_learners = [
+#     ("rf", RandomForestClassifier(n_estimators=100, max_depth=10, class_weight="balanced", random_state=42, n_jobs=1)),
+#     ("hgb", HistGradientBoostingClassifier(max_depth=8, random_state=42))
+# ]
+# meta = ExtraTreesClassifier(n_estimators=50, max_depth=8, random_state=42, n_jobs=1)
+
 base_learners = [
-    ("rf", RandomForestClassifier(n_estimators=100, max_depth=10, class_weight="balanced", random_state=42, n_jobs=1)),
-    ("hgb", HistGradientBoostingClassifier(max_depth=8, random_state=42))
+    ("rf", RandomForestClassifier(n_estimators=50, max_depth=8, class_weight="balanced", random_state=42, n_jobs=1)),
+    ("hgb", HistGradientBoostingClassifier(max_depth=6, random_state=42))
 ]
-meta = ExtraTreesClassifier(n_estimators=50, max_depth=8, random_state=42, n_jobs=1)
+meta = ExtraTreesClassifier(n_estimators=30, max_depth=6, random_state=42, n_jobs=1)
 
 stack = StackingClassifier(
     estimators=base_learners,
@@ -128,6 +169,9 @@ stack = StackingClassifier(
     verbose=1
 )
 
+# clean up memory
+gc.collect()
+
 # train
 print(f"\n[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 try:
@@ -136,6 +180,9 @@ try:
 except Exception:
     print("[Train] Exception during stack.fit():")
     traceback.print_exc()
+
+# clean up memory
+gc.collect()
 
 # check score
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
@@ -165,8 +212,8 @@ report_paths = generate_plotly_evaluation_report(
 )
 
 # export train/test for log
-train_csv = os.path.join(output_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
-test_csv = os.path.join(output_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
+train_csv = os.path.join(outputdata_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
+test_csv = os.path.join(outputdata_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
 pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, index=False)
 print(f"[Export] train -> {train_csv}")
