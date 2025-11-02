@@ -79,16 +79,33 @@ print(f"[Load] rows: {len(df)}")
 df = optimize_dataframe(df)
 print(f"[Load] memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
 
-df["Label"] = df["Label"].apply(to_binary_label)
+# df["Label"] = df["Label"].apply(to_binary_label)
+# before = len(df)
+# df = df.dropna(subset=["Label"])
+# dropped = before - len(df)
+# if dropped:
+#     print(f"[Label] Dropped {dropped} rows with undetermined Label")
+# df["Label"] = df["Label"].astype(int)
+# print("[Label] value counts:\n", df["Label"].value_counts())
+
+# --- vector label map, faster than to_binary_label
+labels = df["Label"].astype(str)
+mask_bot = labels.str.contains("bot", case=False, na=False)
+labels_num = pd.to_numeric(df["Label"], errors="coerce")
+mask_zero_one = labels_num.isin([0, 1])
+mask_prob = labels_num.notna() & ~mask_zero_one
+result = pd.Series(np.nan, index=df.index)
+result[mask_bot] = 1
+result[mask_zero_one] = labels_num[mask_zero_one].astype(int)
+result[mask_prob] = (labels_num[mask_prob] >= 0.5).astype(int)
+df["Label"] = result
 before = len(df)
 df = df.dropna(subset=["Label"])
 dropped = before - len(df)
 if dropped:
     print(f"[Label] Dropped {dropped} rows with undetermined Label")
-
 df["Label"] = df["Label"].astype(int)
 print("[Label] value counts:\n", df["Label"].value_counts())
-
 if df["Label"].nunique() < 2:
     raise RuntimeError("Less than 2 classes present — cannot train classifier.")
 
@@ -99,7 +116,7 @@ for c in cat_cols:
     if c in df.columns:
         df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-features = [col for col in ["Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
+features = [col for col in ["SrcAddr", "DstAddr", "Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
 if not features:
     raise RuntimeError("No numeric features found in dataset!")
 
@@ -173,7 +190,8 @@ stack = StackingClassifier(
     n_jobs=1,
     passthrough=False,
     verbose=1
-).set_params(memory="/tmp/joblib_cache")
+)
+# .set_params(memory="/tmp/joblib_cache")
 print("\n[Train] Fitting stacking classifier...")
 try:
     stack.fit(X_train_selected, y_train)
