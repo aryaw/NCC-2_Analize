@@ -35,8 +35,7 @@ from libInternal import (
     setFileLocation,
     setExportDataLocation,
     optimize_dataframe,
-    fast_label_to_binary,
-    generate_plotly_evaluation_report_smote
+    fast_label_to_binary
 )
 
 # job limit
@@ -49,8 +48,7 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMBA_NUM_THREADS"] = "1"
 
 SELECTED_SENSOR_ID = "1"
-fileTimeStamp, output_dir = setFileLocation()
-fileDataTimeStamp, outputdata_dir = setExportDataLocation()
+fileTimeStamp, output_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
@@ -196,11 +194,60 @@ except Exception as e:
 print(f"[Report] -> {report_path}")
 
 # save data splits
-train_csv = os.path.join(outputdata_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
-test_csv = os.path.join(outputdata_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
+train_csv = os.path.join(output_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
+test_csv = os.path.join(output_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_SMOTE_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
 pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, index=False)
 print(f"[Export] train -> {train_csv}")
 print(f"[Export] test  -> {test_csv}")
 
 print(f"\nDone. Model (SMOTE) trained and report generated for Sensor {SELECTED_SENSOR_ID}.")
+
+# === NEW: generate_plotly_evaluation_report_smote ===
+def generate_plotly_evaluation_report_smote(y_true, y_pred, y_prob, sensor_id, best_threshold, output_dir, file_timestamp):
+    """Generate Precision-Recall curve, ROC curve, and metric summary dashboard."""
+    prec, rec, _ = precision_recall_curve(y_true, y_prob)
+    fpr, tpr, _ = roc_curve(y_true, y_prob)
+    roc_auc_val = auc(fpr, tpr)
+
+    metrics = {
+        "Accuracy": round((y_pred == y_true).mean() * 100, 2),
+        "Precision": precision_score(y_true, y_pred),
+        "Recall": recall_score(y_true, y_pred),
+        "F1 Score": f1_score(y_true, y_pred),
+        "ROC-AUC": roc_auc_val
+    }
+
+    fig = sp.make_subplots(rows=1, cols=2, subplot_titles=("Precision-Recall Curve", "ROC Curve"))
+
+    # PR curve
+    fig.add_trace(go.Scatter(x=rec, y=prec, mode="lines", name="PR Curve", line=dict(width=2)), row=1, col=1)
+    fig.update_xaxes(title_text="Recall", row=1, col=1)
+    fig.update_yaxes(title_text="Precision", row=1, col=1)
+
+    # ROC curve
+    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name=f"ROC Curve (AUC={roc_auc_val:.3f})", line=dict(width=2)), row=1, col=2)
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random Guess", line=dict(dash="dash")), row=1, col=2)
+    
+    fig.update_xaxes(title_text="False Positive Rate", row=1, col=2)
+    fig.update_yaxes(title_text="True Positive Rate", row=1, col=2)
+
+    text_metrics = "<br>".join([f"<b>{k}:</b> {v:.4f}" if k != "Accuracy" else f"<b>{k}:</b> {v:.2f}%" for k, v in metrics.items()])
+    fig.add_annotation(
+        text=f"<b>Sensor {sensor_id} Evaluation Summary (SMOTE)</b><br>{text_metrics}<br><br><b>Best Threshold:</b> {best_threshold:.3f}",
+        xref="paper", yref="paper", x=0.5, y=-0.2, showarrow=False, align="left"
+    )
+
+    fig.update_layout(
+        title=f"Evaluation Dashboard (SMOTE) - Sensor {sensor_id}",
+        title_x=0.5,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        height=600,
+        width=1100
+    )
+
+    html_path = os.path.join(output_dir, f"EvaluationReport_Sensor{sensor_id}_SMOTE_{file_timestamp}.html")
+    fig.write_html(html_path)
+    print(f"[Report] Saved -> {html_path}")
+    return html_path

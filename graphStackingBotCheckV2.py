@@ -35,7 +35,7 @@ from libInternal import (
     generate_plotly_evaluation_report
 )
 
-# job limit
+# === Thread & Memory Limits ===
 os.environ["JOBLIB_TEMP_FOLDER"] = "/tmp"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -44,6 +44,7 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMBA_NUM_THREADS"] = "1"
 
+# === CONFIG ===
 SELECTED_SENSOR_ID = "1"
 fileTimeStamp, output_dir = setFileLocation()
 fileDataTimeStamp, outputdata_dir = setExportDataLocation()
@@ -51,6 +52,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
 
+# === LOAD DATA ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -81,79 +83,55 @@ print(df["Label"].value_counts())
 print("\n[DEBUG] Group by Label for Sensor:", SELECTED_SENSOR_ID)
 print(df[["SensorId", "Label"]].groupby("Label").size())
 
-# keep all minority rows, sample majority to (minority_count * ratio) capped at max_major
+# === DOWNSAMPLE (to balance dataset) ===
 counts = df["Label"].value_counts()
 if len(counts) > 1:
     minority_label = counts.idxmin()
     majority_label = counts.idxmax()
     minority_count = counts.min()
     majority_count = counts.max()
-    ratio = 5                  # how many majority rows per minority row to keep
-    max_major = 800_000        # absolute cap for majority rows (tune as needed)
+    ratio = 5
+    max_major = 800_000
     desired_major = min(max(int(minority_count * ratio), minority_count), max_major)
 
     if majority_count > desired_major:
         print(f"[Downsample] minority={minority_count:,}, majority={majority_count:,} -> sampling majority to {desired_major:,}")
         df_min = df[df["Label"] == minority_label]
         df_maj = df[df["Label"] == majority_label].sample(n=desired_major, random_state=42)
-        
-        # if there are more than 2 labels (unlikely), keep other labels as-is
-        other = df[~df["Label"].isin([minority_label, majority_label])]
-        df = pd.concat([df_min, df_maj, other], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
+        df = pd.concat([df_min, df_maj], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
         gc.collect()
         print(f"[Downsample] New dataset size: {len(df):,}")
-    else:
-        print(f"[Downsample] No downsampling needed (majority {majority_count:,} <= desired {desired_major:,})")
 else:
     print("[Downsample] Only one class present (handled later)")
 
-# Safety check for binary class existence
 if df["Label"].nunique() < 2:
     raise RuntimeError(f"Sensor {SELECTED_SENSOR_ID} contains only one class — cannot train classifier.")
 
-# drop irrelevant/missing features
+# === CLEAN AND ENCODE ===
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
-
-# encode categorycal
 cat_cols = ["Proto", "Dir", "State"]
 for c in cat_cols:
     if c in df.columns:
         df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-# feature
 features = [col for col in ["Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
 if not features:
     raise RuntimeError("No valid numeric features found in dataset!")
 print(f"[Features] Using features ({len(features)}): {features}")
 
-# split data train 80/test 20
+# === TRAIN/TEST SPLIT ===
 X = df[features].fillna(df[features].mean())
-y = df["Label"]
-
-y = np.rint(y).astype(int)   # cast labels to discrete ints
+y = np.rint(df["Label"]).astype(int)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
-y_train = np.asarray(y_train).astype(int)
-y_test = np.asarray(y_test).astype(int)
 print("[Split] y_train distribution:", np.bincount(y_train))
 print("[Split] y_test distribution:", np.bincount(y_test))
 
-# scaling
+# === SCALE ===
 scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# ensure integer labels
-y_train = np.rint(y_train).astype(int)
-y_test = np.rint(y_test).astype(int)
-print("[Check] Unique y_train labels:", np.unique(y_train))
-
-# ensemble model
-# base_learners = [
-#     ("rf", RandomForestClassifier(n_estimators=100, max_depth=10, class_weight="balanced", random_state=42, n_jobs=1)),
-#     ("hgb", HistGradientBoostingClassifier(max_depth=8, random_state=42))
-# ]
-# meta = ExtraTreesClassifier(n_estimators=50, max_depth=8, random_state=42, n_jobs=1)
-
+# === ENSEMBLE MODEL ===
 base_learners = [
     ("rf", RandomForestClassifier(n_estimators=50, max_depth=8, class_weight="balanced", random_state=42, n_jobs=1)),
     ("hgb", HistGradientBoostingClassifier(max_depth=6, random_state=42))
@@ -169,22 +147,14 @@ stack = StackingClassifier(
     verbose=1
 )
 
-# clean up memory
+# === TRAIN MODEL ===
 gc.collect()
-
-# train
 print(f"\n[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
-try:
-    stack.fit(X_train_scaled, y_train)
-    print("[Train] Done.")
-except Exception:
-    print("[Train] Exception during stack.fit():")
-    traceback.print_exc()
-
-# clean up memory
+stack.fit(X_train_scaled, y_train)
+print("[Train] Done.")
 gc.collect()
 
-# check score
+# === EVALUATE ===
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
 prec, rec, thr = precision_recall_curve(y_test, p_test)
 f1s = 2 * prec * rec / (prec + rec + 1e-12)
@@ -201,17 +171,7 @@ print("F1 Score:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 print("\nClassification Report:\n", classification_report(y_test, y_pred_test, digits=4))
 
-report_paths = generate_plotly_evaluation_report(
-    y_true=y_test,
-    y_pred=y_pred_test,
-    y_prob=p_test,
-    sensor_id=SELECTED_SENSOR_ID,
-    best_threshold=best_threshold,
-    output_dir=graph_dir,
-    file_timestamp=fileTimeStamp
-)
-
-# export train/test for log
+# === EXPORT DATA ===
 train_csv = os.path.join(outputdata_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv = os.path.join(outputdata_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
@@ -219,19 +179,28 @@ pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, in
 print(f"[Export] train -> {train_csv}")
 print(f"[Export] test  -> {test_csv}")
 
-# apply model
+# === APPLY MODEL ===
 df_scaled = scaler.transform(df[features])
 df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 df["PredictedRole"] = df["PredictedLabel"].apply(lambda x: "Botnet" if x == 1 else "Normal")
 
-# generate graph
+# === GRAPH VISUALIZATION (SAFE SAMPLING) ===
 print(f"[Graph] Generating visualization for Sensor {SELECTED_SENSOR_ID} with {len(df)} edges...")
-G = nx.from_pandas_edgelist(df, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
+
+MAX_EDGES = 5000
+if len(df) > MAX_EDGES:
+    df_vis = df.sample(n=MAX_EDGES, random_state=42)
+    print(f"[Graph] Sampled {MAX_EDGES} edges for visualization.")
+else:
+    df_vis = df
+
+# Create smaller graph
+G = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
 
 node_roles = {}
-for addr in set(df["SrcAddr"]).union(df["DstAddr"]):
-    subset = df[(df["SrcAddr"] == addr) | (df["DstAddr"] == addr)]
+for addr in set(df_vis["SrcAddr"]).union(df_vis["DstAddr"]):
+    subset = df_vis[(df_vis["SrcAddr"] == addr) | (df_vis["DstAddr"] == addr)]
     avg_prob = subset["PredictedProb"].mean()
     if avg_prob > 0.85:
         node_roles[addr] = "C&C"
@@ -240,15 +209,19 @@ for addr in set(df["SrcAddr"]).union(df["DstAddr"]):
     else:
         node_roles[addr] = "Normal"
 
-pos = nx.spring_layout(G, k=0.5, iterations=30, seed=42)
+# faster layout
+pos = nx.kamada_kawai_layout(G)
+
+# edges
 edge_x, edge_y = [], []
 for src, dst in G.edges():
     x0, y0 = pos[src]
     x1, y1 = pos[dst]
     edge_x += [x0, x1, None]
     edge_y += [y0, y1, None]
-
 edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.6, color="#AAA"), mode="lines", hoverinfo="none")
+
+# nodes
 node_x, node_y, node_text, node_color, node_size = [], [], [], [], []
 for node in G.nodes():
     x, y = pos[node]
@@ -261,7 +234,7 @@ for node in G.nodes():
 
 node_trace = go.Scatter(
     x=node_x, y=node_y,
-    mode="markers+text",
+    mode="markers",
     hovertext=node_text,
     hoverinfo="text",
     marker=dict(color=node_color, size=node_size, line=dict(width=1, color="#333")),
@@ -270,7 +243,7 @@ node_trace = go.Scatter(
 fig = go.Figure(
     data=[edge_trace, node_trace],
     layout=go.Layout(
-        title=f"Sensor {SELECTED_SENSOR_ID} - Botnet Network (Global Model)",
+        title=f"Sensor {SELECTED_SENSOR_ID} - Botnet Network (Sampled 5K edges)",
         title_x=0.5,
         showlegend=False,
         hovermode="closest",
@@ -282,8 +255,8 @@ fig = go.Figure(
     ),
 )
 
-html_output = os.path.join(graph_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_GlobalModel_{fileTimeStamp}.html")
+html_output = os.path.join(graph_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_Sampled5K_{fileTimeStamp}.html")
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
 
-print(f"\nDone. Model trained and graph generated for Sensor {SELECTED_SENSOR_ID}.")
+print(f"\n✅ Done. Model trained and sampled graph generated for Sensor {SELECTED_SENSOR_ID}.")
