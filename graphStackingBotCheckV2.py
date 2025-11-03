@@ -11,9 +11,8 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.ensemble import (
     RandomForestClassifier,
     HistGradientBoostingClassifier,
-    ExtraTreesClassifier,
-    StackingClassifier,
     GradientBoostingClassifier,
+    StackingClassifier,
 )
 from sklearn.metrics import (
     classification_report,
@@ -31,6 +30,7 @@ from libInternal import (
     fast_label_to_binary,
 )
 
+# thread limits
 os.environ.update({
     "JOBLIB_TEMP_FOLDER": "/tmp",
     "OMP_NUM_THREADS": "1",
@@ -65,7 +65,7 @@ if df.empty:
 df = optimize_dataframe(df)
 df = fast_label_to_binary(df)
 
-# downsize sample
+# down sample
 counts = df["Label"].value_counts()
 if len(counts) > 1:
     min_label = counts.idxmin()
@@ -88,7 +88,7 @@ df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
 for c in ["Proto", "State"]:
     df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-# feature enginering
+# feature engineering
 df["ByteRatio"] = df["TotBytes"] / (df["TotPkts"] + 1)
 df["DurationRate"] = df["TotPkts"] / (df["Dur"] + 0.1)
 df["FlowIntensity"] = df["SrcBytes"] / (df["TotBytes"] + 1)
@@ -106,7 +106,7 @@ scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# stack model
+# stacking
 base_learners = [
     ("rf", RandomForestClassifier(
         n_estimators=100, max_depth=12, min_samples_split=4,
@@ -142,14 +142,14 @@ print("Recall:", recall_score(y_test, y_pred_test))
 print("F1:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 
-# export train/test data
+# export train/test
 train_csv = os.path.join(outputdata_dir, f"Train_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv = os.path.join(outputdata_dir, f"Test_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
 pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, index=False)
 print(f"[Export] Train/Test data exported to {outputdata_dir}")
 
-# apply model
+# predict on full dataset (NaN-safe)
 print("[Predict] Generating predictions on full dataset...")
 df[features] = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
 df_scaled = scaler.transform(df[features])
@@ -158,7 +158,6 @@ try:
     df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
 except ValueError as e:
     print(f"[WARN] NaN-safe fallback: {e}")
-    print("[INFO] Switching meta model to NaN-tolerant HistGradientBoostingClassifier...")
     meta_hgb = HistGradientBoostingClassifier(max_depth=6, learning_rate=0.05, random_state=42)
     stack.final_estimator = meta_hgb
     stack.fit(X_train_scaled, y_train)
@@ -166,11 +165,25 @@ except ValueError as e:
 
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 
-# Dir-based graph visualization
-MAX_EDGES = 5000
-df_vis = df.sample(n=MAX_EDGES, random_state=42) if len(df) > MAX_EDGES else df
+# FULL GRAPH with EDGE AGGREGATION
+print(f"[Graph] Generating full visualization (keeping all nodes, aggregated edges)...")
+
+# aggregate duplicate edges by SrcAddr-DstAddr
+df_vis = (
+    df.groupby(["SrcAddr", "DstAddr"], as_index=False)
+      .agg({
+          "PredictedProb": "mean",
+          "Dir_raw": "first",
+          "TotBytes": "sum",
+          "TotPkts": "sum"
+      })
+)
+print(f"[Graph] Unique aggregated edges: {len(df_vis):,}")
+
+# build directed graph
 G = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
 
+# inbound/outbound + prob stats
 inbound, outbound, prob_sum, edge_ct = {}, {}, {}, {}
 for _, r in df_vis.iterrows():
     s, d, p, dr = r["SrcAddr"], r["DstAddr"], float(r["PredictedProb"]), str(r["Dir_raw"]).strip()
@@ -204,7 +217,12 @@ for node in G.nodes():
     else:
         node_roles[node] = "Normal"
 
-pos = nx.kamada_kawai_layout(G)
+print(f"[Graph] Total nodes: {len(G.nodes())}, Roles assigned: {len(node_roles)}")
+
+# fast layout for large graph
+pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
+
+# edges
 edge_x, edge_y, edge_colors = [], [], []
 for _, r in df_vis.iterrows():
     s, d, dr = r["SrcAddr"], r["DstAddr"], str(r["Dir_raw"]).strip()
@@ -214,7 +232,9 @@ for _, r in df_vis.iterrows():
     edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
     edge_colors.append("#66B2FF" if dr == "->" else "#FF6666" if dr == "<-" else "#9B59B6")
 
-edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.5, color="#AAA"), mode="lines", hoverinfo="none")
+edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.4, color="#AAA"), mode="lines", hoverinfo="none")
+
+# nodes
 node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
 for n in G.nodes():
     x, y = pos[n]
@@ -223,24 +243,27 @@ for n in G.nodes():
     node_x.append(x); node_y.append(y)
     node_text.append(f"{n}<br>Role:{role}<br>Prob:{avg_prob:.3f}")
     node_color.append("#FF0000" if role == "C&C" else "#FFB347" if role == "Bot" else "#CCCCCC")
-    node_size.append(24 if role == "C&C" else 12 if role == "Bot" else 6)
+    node_size.append(22 if role == "C&C" else 12 if role == "Bot" else 6)
 
 node_trace = go.Scatter(
-    x=node_x,
-    y=node_y,
-    mode="markers",
-    hovertext=node_text,
-    hoverinfo="text",
+    x=node_x, y=node_y, mode="markers",
+    hovertext=node_text, hoverinfo="text",
     marker=dict(color=node_color, size=node_size, line=dict(width=1, color="#333"))
 )
+
 fig = go.Figure(
     data=[edge_trace, node_trace],
-    layout=go.Layout(title=f"Sensor {SELECTED_SENSOR_ID} - Enhanced Dir Botnet Graph (5K edges)",
-    title_x=0.5, plot_bgcolor="white", paper_bgcolor="white",
-    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
+    layout=go.Layout(
+        title=f"Sensor {SELECTED_SENSOR_ID} - Full Graph (All Nodes, Aggregated Edges)",
+        title_x=0.5, showlegend=False, hovermode="closest",
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(b=20, l=5, r=5, t=40),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    ),
 )
-html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_Enhanced_{fileTimeStamp}.html")
+
+html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_FullAgg_{fileTimeStamp}.html")
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
-print("\nDone. Tuned model & NaN-safe Dir-based graph generated.")
+print("\nDone. Full graph with all nodes and aggregated edges rendered successfully.")
