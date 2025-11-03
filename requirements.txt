@@ -5,6 +5,7 @@ sqlalchemy
 python-dotenv
 scikit-learn
 xgboost
+lightgbm
 imbalanced-learn
 joblib
 plotly

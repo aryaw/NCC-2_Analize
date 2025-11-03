@@ -7,21 +7,22 @@ import plotly.graph_objects as go
 import networkx as nx
 from datetime import datetime
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler, QuantileTransformer
 from sklearn.ensemble import (
     RandomForestClassifier,
     HistGradientBoostingClassifier,
-    GradientBoostingClassifier,
+    ExtraTreesClassifier,
     StackingClassifier,
 )
 from sklearn.metrics import (
     classification_report,
-    precision_recall_curve,
     precision_score,
     recall_score,
     f1_score,
     roc_auc_score,
+    roc_curve,
 )
+from xgboost import XGBClassifier
 from libInternal import (
     getConnection,
     setFileLocation,
@@ -30,7 +31,7 @@ from libInternal import (
     fast_label_to_binary,
 )
 
-# thread limits
+# === Thread limits ===
 os.environ.update({
     "JOBLIB_TEMP_FOLDER": "/tmp",
     "OMP_NUM_THREADS": "1",
@@ -47,6 +48,7 @@ fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 
+# === LOAD DATA ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -65,7 +67,7 @@ if df.empty:
 df = optimize_dataframe(df)
 df = fast_label_to_binary(df)
 
-# down sample
+# === DOWNSAMPLE ===
 counts = df["Label"].value_counts()
 if len(counts) > 1:
     min_label = counts.idxmin()
@@ -80,7 +82,7 @@ if len(counts) > 1:
         df = pd.concat([df_min, df_maj], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
 gc.collect()
 
-# clean & encode
+# === CLEAN & ENCODE ===
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
@@ -88,87 +90,94 @@ df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
 for c in ["Proto", "State"]:
     df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-# feature engineering
+# === Enhanced Feature Engineering ===
 df["ByteRatio"] = df["TotBytes"] / (df["TotPkts"] + 1)
 df["DurationRate"] = df["TotPkts"] / (df["Dur"] + 0.1)
 df["FlowIntensity"] = df["SrcBytes"] / (df["TotBytes"] + 1)
+df["PktByteRatio"] = df["TotPkts"] / (df["TotBytes"] + 1)
+df["SrcByteRatio"] = df["SrcBytes"] / (df["TotBytes"] + 1)
+df["TrafficBalance"] = np.abs(df["sTos"] - df["dTos"])
+df["DurationPerPkt"] = df["Dur"] / (df["TotPkts"] + 1)
+df["Intensity"] = (df["TotBytes"] / (df["Dur"] + 1))
+
 features = [
     "Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes",
-    "ByteRatio", "DurationRate", "FlowIntensity"
+    "ByteRatio", "DurationRate", "FlowIntensity", "PktByteRatio",
+    "SrcByteRatio", "TrafficBalance", "DurationPerPkt", "Intensity"
 ]
 print(f"[Features] {len(features)} total: {features}")
 
-# split & scale
+# === Split & Scale ===
 X = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
 y = np.rint(df["Label"]).astype(int)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 scaler = MinMaxScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
+qt = QuantileTransformer(output_distribution='normal', random_state=42)
+X_train_scaled = qt.fit_transform(scaler.fit_transform(X_train))
+X_test_scaled = qt.transform(scaler.transform(X_test))
 
-# stacking
+# === Enhanced Stacking Model ===
 base_learners = [
     ("rf", RandomForestClassifier(
-        n_estimators=100, max_depth=12, min_samples_split=4,
+        n_estimators=150, max_depth=16, min_samples_split=3,
         class_weight="balanced", random_state=42, n_jobs=1)),
-    ("hgb", HistGradientBoostingClassifier(
-        max_depth=8, learning_rate=0.05, random_state=42)),
+    ("hgb", HistGradientBoostingClassifier(max_depth=10, learning_rate=0.05, random_state=42)),
+    ("et", ExtraTreesClassifier(n_estimators=200, max_depth=16, random_state=42, n_jobs=1))
 ]
-meta = GradientBoostingClassifier(
-    n_estimators=100, learning_rate=0.05, max_depth=4, random_state=42)
+
+meta = XGBClassifier(
+    n_estimators=300,
+    learning_rate=0.05,
+    max_depth=8,
+    subsample=0.9,
+    colsample_bytree=0.9,
+    scale_pos_weight=len(y_train[y_train==0]) / len(y_train[y_train==1]),
+    eval_metric="logloss",
+    random_state=42,
+    n_jobs=1
+)
 
 stack = StackingClassifier(
     estimators=base_learners,
     final_estimator=meta,
-    cv=3, n_jobs=1, passthrough=True, verbose=1
+    cv=5, n_jobs=1, passthrough=True, verbose=1
 )
 
-print(f"[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
+print(f"[Train] Training enhanced stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 stack.fit(X_train_scaled, y_train)
 
-# evaluate
+# === Evaluate with ROC-based Threshold ===
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
-prec, rec, thr = precision_recall_curve(y_test, p_test)
-f1s = 2 * prec * rec / (prec + rec + 1e-12)
-best_idx = np.nanargmax(f1s)
-best_threshold = thr[best_idx] if best_idx < len(thr) else 0.5
+fpr, tpr, thr_roc = roc_curve(y_test, p_test)
+gmeans = np.sqrt(tpr * (1 - fpr))
+best_idx = np.argmax(gmeans)
+best_threshold = thr_roc[best_idx]
 y_pred_test = (p_test >= best_threshold).astype(int)
 
 print("\n# Evaluation for Sensor:", SELECTED_SENSOR_ID)
-print("Best threshold:", round(best_threshold, 3))
+print("Best threshold (ROC-opt):", round(best_threshold, 3))
 print("Accuracy:", round((y_pred_test == y_test).mean() * 100, 2), "%")
 print("Precision:", precision_score(y_test, y_pred_test))
 print("Recall:", recall_score(y_test, y_pred_test))
 print("F1:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 
-# export train/test
+# === Export Train/Test Split ===
 train_csv = os.path.join(outputdata_dir, f"Train_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv = os.path.join(outputdata_dir, f"Test_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
 pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, index=False)
 print(f"[Export] Train/Test data exported to {outputdata_dir}")
 
-# predict on full dataset (NaN-safe)
+# === Predict on Full Dataset ===
 print("[Predict] Generating predictions on full dataset...")
 df[features] = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
-df_scaled = scaler.transform(df[features])
-
-try:
-    df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
-except ValueError as e:
-    print(f"[WARN] NaN-safe fallback: {e}")
-    meta_hgb = HistGradientBoostingClassifier(max_depth=6, learning_rate=0.05, random_state=42)
-    stack.final_estimator = meta_hgb
-    stack.fit(X_train_scaled, y_train)
-    df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
-
+df_scaled = qt.transform(scaler.transform(df[features]))
+df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 
-# FULL GRAPH with EDGE AGGREGATION
+# === Full Graph with Aggregated Edges ===
 print(f"[Graph] Generating full visualization (keeping all nodes, aggregated edges)...")
-
-# aggregate duplicate edges by SrcAddr-DstAddr
 df_vis = (
     df.groupby(["SrcAddr", "DstAddr"], as_index=False)
       .agg({
@@ -180,10 +189,8 @@ df_vis = (
 )
 print(f"[Graph] Unique aggregated edges: {len(df_vis):,}")
 
-# build directed graph
 G = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
 
-# inbound/outbound + prob stats
 inbound, outbound, prob_sum, edge_ct = {}, {}, {}, {}
 for _, r in df_vis.iterrows():
     s, d, p, dr = r["SrcAddr"], r["DstAddr"], float(r["PredictedProb"]), str(r["Dir_raw"]).strip()
@@ -219,22 +226,19 @@ for node in G.nodes():
 
 print(f"[Graph] Total nodes: {len(G.nodes())}, Roles assigned: {len(node_roles)}")
 
-# fast layout for large graph
+# Layout
 pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
-
-# edges
-edge_x, edge_y, edge_colors = [], [], []
+edge_x, edge_y = [], []
 for _, r in df_vis.iterrows():
-    s, d, dr = r["SrcAddr"], r["DstAddr"], str(r["Dir_raw"]).strip()
+    s, d = r["SrcAddr"], r["DstAddr"]
     if s not in pos or d not in pos:
         continue
     x0, y0 = pos[s]; x1, y1 = pos[d]
     edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
-    edge_colors.append("#66B2FF" if dr == "->" else "#FF6666" if dr == "<-" else "#9B59B6")
 
-edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.4, color="#AAA"), mode="lines", hoverinfo="none")
+edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.3, color="#AAA"), mode="lines", hoverinfo="none")
 
-# nodes
+# Nodes
 node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
 for n in G.nodes():
     x, y = pos[n]
@@ -266,4 +270,4 @@ fig = go.Figure(
 html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_FullAgg_{fileTimeStamp}.html")
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
-print("\nDone. Full graph with all nodes and aggregated edges rendered successfully.")
+print("\n✅ Done. Full graph with all nodes and aggregated edges rendered successfully.")
