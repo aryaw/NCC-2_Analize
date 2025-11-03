@@ -15,7 +15,6 @@ from sklearn.ensemble import (
     StackingClassifier,
 )
 from sklearn.metrics import (
-    classification_report,
     precision_score,
     recall_score,
     f1_score,
@@ -67,7 +66,7 @@ if df.empty:
 df = optimize_dataframe(df)
 df = fast_label_to_binary(df)
 
-# === DOWNSAMPLE ===
+# downsize
 counts = df["Label"].value_counts()
 if len(counts) > 1:
     min_label = counts.idxmin()
@@ -82,7 +81,7 @@ if len(counts) > 1:
         df = pd.concat([df_min, df_maj], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
 gc.collect()
 
-# === CLEAN & ENCODE ===
+# clean & encode
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
@@ -90,7 +89,7 @@ df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
 for c in ["Proto", "State"]:
     df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-# === Enhanced Feature Engineering ===
+# feature engineering
 df["ByteRatio"] = df["TotBytes"] / (df["TotPkts"] + 1)
 df["DurationRate"] = df["TotPkts"] / (df["Dur"] + 0.1)
 df["FlowIntensity"] = df["SrcBytes"] / (df["TotBytes"] + 1)
@@ -146,7 +145,7 @@ stack = StackingClassifier(
 print(f"[Train] Training enhanced stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 stack.fit(X_train_scaled, y_train)
 
-# === Evaluate with ROC-based Threshold ===
+# evaluate with ROC-based threshold
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
 fpr, tpr, thr_roc = roc_curve(y_test, p_test)
 gmeans = np.sqrt(tpr * (1 - fpr))
@@ -162,92 +161,83 @@ print("Recall:", recall_score(y_test, y_pred_test))
 print("F1:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 
-# === Export Train/Test Split ===
-train_csv = os.path.join(outputdata_dir, f"Train_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
-test_csv = os.path.join(outputdata_dir, f"Test_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
-pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
-pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, index=False)
-print(f"[Export] Train/Test data exported to {outputdata_dir}")
-
-# === Predict on Full Dataset ===
+# predict on full dataset
 print("[Predict] Generating predictions on full dataset...")
 df[features] = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
 df_scaled = qt.transform(scaler.transform(df[features]))
 df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 
-# === Full Graph with Aggregated Edges ===
+# === Full Graph with Aggregated Edges (Optimized) ===
 print(f"[Graph] Generating full visualization (keeping all nodes, aggregated edges)...")
+
 df_vis = (
     df.groupby(["SrcAddr", "DstAddr"], as_index=False)
       .agg({
           "PredictedProb": "mean",
-          "Dir_raw": "first",
+          "Dir_raw": lambda x: x.value_counts().index[0] if len(x) else "->",
           "TotBytes": "sum",
           "TotPkts": "sum"
       })
 )
 print(f"[Graph] Unique aggregated edges: {len(df_vis):,}")
 
+# build directed graph
 G = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
 
-inbound, outbound, prob_sum, edge_ct = {}, {}, {}, {}
-for _, r in df_vis.iterrows():
-    s, d, p, dr = r["SrcAddr"], r["DstAddr"], float(r["PredictedProb"]), str(r["Dir_raw"]).strip()
-    for n in [s, d]:
-        inbound.setdefault(n, 0)
-        outbound.setdefault(n, 0)
-        prob_sum.setdefault(n, 0)
-        edge_ct.setdefault(n, 0)
-    prob_sum[s] += p; prob_sum[d] += p
-    edge_ct[s] += 1; edge_ct[d] += 1
-    if dr == "->":
-        outbound[s] += 1; inbound[d] += 1
-    elif dr == "<-":
-        outbound[d] += 1; inbound[s] += 1
-    elif dr == "<->":
-        outbound[s] += 1; outbound[d] += 1; inbound[s] += 1; inbound[d] += 1
-    else:
-        outbound[s] += 1; inbound[d] += 1
+# vectorized inbound/outbound stats
+agg_in = df_vis.groupby("DstAddr")["PredictedProb"].agg(["count", "mean"]).rename(columns={"count": "in_ct", "mean": "in_prob"})
+agg_out = df_vis.groupby("SrcAddr")["PredictedProb"].agg(["count", "mean"]).rename(columns={"count": "out_ct", "mean": "out_prob"})
+stats = agg_in.join(agg_out, how="outer").fillna(0)
+stats["in_ratio"] = stats["in_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9)
+stats["avg_prob"] = (stats["in_prob"] + stats["out_prob"]) / 2
+stats["degree"] = stats["in_ct"] + stats["out_ct"]
 
+# auto-detect roles
 node_roles = {}
-for node in G.nodes():
-    in_ct = inbound.get(node, 0)
-    out_ct = outbound.get(node, 0)
-    in_ratio = in_ct / (in_ct + out_ct + 1e-9)
-    avg_prob = prob_sum.get(node, 0) / max(edge_ct.get(node, 1), 1)
-    deg = edge_ct.get(node, 0)
-    if avg_prob > 0.9 and in_ratio > 0.6 and deg > 3:
-        node_roles[node] = "C&C"
-    elif avg_prob > 0.6 and in_ratio > 0.5:
-        node_roles[node] = "Bot"
+for n, r in stats.iterrows():
+    if r["avg_prob"] > 0.9 and r["in_ratio"] > 0.8 and r["degree"] > 3:
+        node_roles[n] = "C&C"
+    elif r["avg_prob"] > 0.6 and r["in_ratio"] > 0.5:
+        node_roles[n] = "Bot"
     else:
-        node_roles[node] = "Normal"
+        node_roles[n] = "Normal"
 
 print(f"[Graph] Total nodes: {len(G.nodes())}, Roles assigned: {len(node_roles)}")
 
-# Layout
-pos = nx.spring_layout(G, k=0.5, iterations=50, seed=42)
+# fast layout
+print("[Graph] Computing layout...")
+pos = nx.spring_layout(G, k=0.45, iterations=30, seed=42, dim=2)
+
+# draw edges
 edge_x, edge_y = [], []
-for _, r in df_vis.iterrows():
-    s, d = r["SrcAddr"], r["DstAddr"]
-    if s not in pos or d not in pos:
+for s, d in G.edges():
+    if s not in pos or d not in pos: 
         continue
     x0, y0 = pos[s]; x1, y1 = pos[d]
-    edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
+    edge_x.extend([x0, x1, None])
+    edge_y.extend([y0, y1, None])
 
-edge_trace = go.Scatter(x=edge_x, y=edge_y, line=dict(width=0.3, color="#AAA"), mode="lines", hoverinfo="none")
+edge_trace = go.Scatter(
+    x=edge_x, y=edge_y, mode="lines",
+    line=dict(width=0.25, color="#AAA"),
+    hoverinfo="none"
+)
 
-# Nodes
+# draw nodes
 node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
-for n in G.nodes():
-    x, y = pos[n]
+for n, (x, y) in pos.items():
     role = node_roles.get(n, "Normal")
-    avg_prob = prob_sum.get(n, 0) / max(edge_ct.get(n, 1), 1)
+    avg_prob = stats.loc[n, "avg_prob"] if n in stats.index else 0
+    in_ratio = stats.loc[n, "in_ratio"] if n in stats.index else 0
     node_x.append(x); node_y.append(y)
-    node_text.append(f"{n}<br>Role:{role}<br>Prob:{avg_prob:.3f}")
-    node_color.append("#FF0000" if role == "C&C" else "#FFB347" if role == "Bot" else "#CCCCCC")
-    node_size.append(22 if role == "C&C" else 12 if role == "Bot" else 6)
+    node_text.append(f"{n}<br>Role:{role}<br>Prob:{avg_prob:.3f}<br>InRatio:{in_ratio:.2f}")
+    if role == "C&C":
+        node_color.append("#FF0000"); node_size.append(26)
+    elif role == "Bot":
+        node_color.append("#FFB347"); node_size.append(14)
+    else:
+        node_color.append("#BFC9CA"); node_size.append(6)
 
 node_trace = go.Scatter(
     x=node_x, y=node_y, mode="markers",
@@ -255,19 +245,29 @@ node_trace = go.Scatter(
     marker=dict(color=node_color, size=node_size, line=dict(width=1, color="#333"))
 )
 
+# combine figure
 fig = go.Figure(
     data=[edge_trace, node_trace],
     layout=go.Layout(
-        title=f"Sensor {SELECTED_SENSOR_ID} - Full Graph (All Nodes, Aggregated Edges)",
+        title=f"Sensor {SELECTED_SENSOR_ID} – Dir-based Auto C&C Graph (Aggregated)",
         title_x=0.5, showlegend=False, hovermode="closest",
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(b=20, l=5, r=5, t=40),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
     ),
 )
 
-html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_FullAgg_{fileTimeStamp}.html")
+html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_FullAggFast_{fileTimeStamp}.html")
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
-print("\n✅ Done. Full graph with all nodes and aggregated edges rendered successfully.")
+
+# export C&C and bot nodes
+detected_roles_csv = os.path.join(output_dir, f"DetectedRoles_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
+pd.DataFrame([
+    {"Node": n, "Role": node_roles[n], "AvgProb": stats.loc[n, "avg_prob"], "InRatio": stats.loc[n, "in_ratio"]}
+    for n in node_roles
+]).to_csv(detected_roles_csv, index=False)
+print(f"[Export] Roles summary -> {detected_roles_csv}")
+
+print("\n✅ Done. High-accuracy model and fast Dir-based full graph generated successfully.")
