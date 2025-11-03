@@ -4,6 +4,7 @@ duckdb
 sqlalchemy
 python-dotenv
 scikit-learn
+xgboost
 imbalanced-learn
 joblib
 plotly
