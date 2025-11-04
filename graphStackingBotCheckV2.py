@@ -64,7 +64,7 @@ if df.empty:
 df = optimize_dataframe(df)
 df = fast_label_to_binary(df)
 
-# downsample
+# downsample majority class (if needed)
 counts = df["Label"].value_counts()
 if len(counts) > 1:
     min_label = counts.idxmin()
@@ -113,13 +113,12 @@ qt = QuantileTransformer(output_distribution='normal', random_state=42)
 X_train_scaled = qt.fit_transform(scaler.fit_transform(X_train))
 X_test_scaled = qt.transform(scaler.transform(X_test))
 
-# stacking
+# stacking model
 base_learners = [
     ("rf", RandomForestClassifier(n_estimators=150, max_depth=16, class_weight="balanced", random_state=42, n_jobs=1)),
     ("hgb", HistGradientBoostingClassifier(max_depth=10, learning_rate=0.05, random_state=42)),
     ("et", ExtraTreesClassifier(n_estimators=200, max_depth=16, random_state=42, n_jobs=1))
 ]
-
 meta = XGBClassifier(
     n_estimators=300, learning_rate=0.05, max_depth=8,
     subsample=0.9, colsample_bytree=0.9,
@@ -128,8 +127,7 @@ meta = XGBClassifier(
 )
 
 stack = StackingClassifier(estimators=base_learners, final_estimator=meta, cv=5, n_jobs=1, passthrough=True, verbose=1)
-
-print(f"[Train] Training enhanced stacking model for Sensor {SELECTED_SENSOR_ID} ...")
+print(f"[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 stack.fit(X_train_scaled, y_train)
 
 # evaluate
@@ -146,9 +144,10 @@ print("Recall:", recall_score(y_test, y_pred_test))
 print("F1:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 
-# outbound-aware C&C detection
+# outbound-aware detection
 print("\n[Info] Evaluating inbound/outbound balance...")
 
+df[features] = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
 df["PredictedProb"] = stack.predict_proba(qt.transform(scaler.transform(df[features])))[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 
@@ -157,19 +156,15 @@ agg_out = df.groupby("SrcAddr")["PredictedProb"].agg(["count", "mean"]).rename(c
 stats = agg_in.join(agg_out, how="outer").fillna(0)
 stats["in_ratio"] = stats["in_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9)
 stats["out_ratio"] = stats["out_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9)
-stats["dir_balance"] = stats["in_ratio"] - stats["out_ratio"]
 stats["avg_prob"] = (stats["in_prob"] + stats["out_prob"]) / 2
 stats["degree"] = stats["in_ct"] + stats["out_ct"]
 
 node_roles = {}
 for n, r in stats.iterrows():
-    if (
-        r["avg_prob"] > 0.9 and
-        (r["in_ratio"] < 0.4 or r["in_ratio"] > 0.6) and
-        r["degree"] > 500
-    ):
+    # tuned rules: high avg_prob, degree and unbalanced in/out makes C&C candidate
+    if (r["avg_prob"] > 0.9) and (r["degree"] > 500) and ((r["in_ratio"] < 0.4) or (r["in_ratio"] > 0.6)):
         node_roles[n] = "C&C"
-    elif r["avg_prob"] > 0.7 and r["degree"] > 50:
+    elif (r["avg_prob"] > 0.7) and (r["degree"] > 50):
         node_roles[n] = "Suspicious"
     else:
         node_roles[n] = "Normal"
@@ -179,69 +174,143 @@ sus_nodes = [n for n, role in node_roles.items() if role == "Suspicious"]
 
 print(f"\n[Detected] {len(cc_nodes)} C&C | {len(sus_nodes)} Suspicious")
 if cc_nodes:
-    print("\n[Detected C&C Nodes]")
-    for cnc in cc_nodes:
-        s = stats.loc[cnc]
-        print(f" - {cnc} | Prob={s['avg_prob']:.3f}, InRatio={s['in_ratio']:.3f}, OutRatio={s['out_ratio']:.3f}, Degree={int(s['degree'])}")
+    cnc_stats = stats.loc[cc_nodes].copy()
+    cnc_stats["cnc_score"] = cnc_stats["avg_prob"] * (1 + cnc_stats["out_ratio"]) * np.log1p(cnc_stats["degree"])
+    cnc_stats = cnc_stats.sort_values("cnc_score", ascending=False)
+    top_cnc_nodes = cnc_stats.head(3).index.tolist()
+    print(f"\n[Top Auto-Detected C&C Nodes]: {top_cnc_nodes}")
+else:
+    top_cnc_nodes = []
 
-print("\n[Debug] Top 10 most suspicious nodes by avg_prob:")
-print(stats.sort_values("avg_prob", ascending=False).head(10)[["avg_prob", "in_ratio", "out_ratio", "degree"]])
-
-# draph (C&C + suspicious + normal)
-print("\n[Graph] Building visualization (C&C + Suspicious + Normal)...")
-
+# build aggregated edges
 df_vis = (
     df.groupby(["SrcAddr", "DstAddr"], as_index=False)
-      .agg({"PredictedProb": "mean", "Dir_raw": lambda x: x.value_counts().index[0] if len(x) else "->"})
+      .agg({
+          "PredictedProb": "mean",
+          "Dir_raw": lambda x: x.value_counts().index[0] if len(x) else "->",
+          "TotBytes": "sum",
+          "TotPkts": "sum"
+      })
 )
-G_full = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
+print(f"[Graph] Unique aggregated edges: {len(df_vis):,}")
 
-important_nodes = set(cc_nodes + sus_nodes)
-for n in cc_nodes + sus_nodes:
-    important_nodes.update(G_full.predecessors(n))
-    important_nodes.update(G_full.successors(n))
-G = G_full.subgraph(list(important_nodes)[:1000])
+# include all edges incident to top C&C nodes
+must_include_nodes = set(top_cnc_nodes + sus_nodes)
 
+# neighbors for must-include nodes
+G_all = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
+
+neighbors = set()
+for n in must_include_nodes:
+    if n in G_all:
+        neighbors.update(G_all.predecessors(n))
+        neighbors.update(G_all.successors(n))
+
+# build important node set = must_include + neighbors (limit if too many)
+important_nodes = must_include_nodes.union(neighbors)
+if len(important_nodes) < 1:
+    # fallback: include top suspicious by avg_prob
+    important_nodes = set(df_vis["SrcAddr"].head(50)).union(set(df_vis["DstAddr"].head(50)))
+
+# include additional normal nodes up to cap to make plot informative
+CAP_NORMALS = 500
+if len(important_nodes) < 1500:
+    normals = [n for n in G_all.nodes() if n not in important_nodes]
+    keep_normals = normals[:CAP_NORMALS]
+    important_nodes = important_nodes.union(keep_normals)
+
+# now filter edges to those incident to important_nodes
+df_vis_sub = df_vis[
+    (df_vis["SrcAddr"].isin(important_nodes)) |
+    (df_vis["DstAddr"].isin(important_nodes))
+].copy()
+
+# force include any original edges touching them
+for cnc in top_cnc_nodes:
+    if cnc not in df_vis_sub["SrcAddr"].values and cnc not in df_vis_sub["DstAddr"].values:
+        extra = df[(df["SrcAddr"] == cnc) | (df["DstAddr"] == cnc)]
+        if not extra.empty:
+            extra_agg = extra.groupby(["SrcAddr", "DstAddr"], as_index=False).agg({"PredictedProb":"mean","Dir_raw":lambda x: x.iloc[0],"TotBytes":"sum","TotPkts":"sum"})
+            df_vis_sub = pd.concat([df_vis_sub, extra_agg], ignore_index=True).drop_duplicates(subset=["SrcAddr","DstAddr"])
+
+G = nx.from_pandas_edgelist(df_vis_sub, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
+
+# recompute stats restricted to nodes present in this subgraph
+agg_in_sub = df_vis_sub.groupby("DstAddr")["PredictedProb"].agg(["count", "mean"]).rename(columns={"count":"in_ct","mean":"in_prob"})
+agg_out_sub = df_vis_sub.groupby("SrcAddr")["PredictedProb"].agg(["count", "mean"]).rename(columns={"count":"out_ct","mean":"out_prob"})
+stats_sub = agg_in_sub.join(agg_out_sub, how="outer").fillna(0)
+stats_sub["in_ratio"] = stats_sub["in_ct"] / (stats_sub["in_ct"] + stats_sub["out_ct"] + 1e-9)
+stats_sub["out_ratio"] = stats_sub["out_ct"] / (stats_sub["in_ct"] + stats_sub["out_ct"] + 1e-9)
+stats_sub["avg_prob"] = (stats_sub["in_prob"] + stats_sub["out_prob"]) / 2
+stats_sub["degree"] = stats_sub["in_ct"] + stats_sub["out_ct"]
+
+print(f"[Graph] Nodes in rendering graph: {len(G.nodes())}, edges: {len(G.edges())}")
+
+# layout
 pos = nx.spring_layout(G, k=0.5, iterations=20, seed=42)
+
+# draw edges using df_vis_sub so lines correspond to aggregated edges
 edge_x, edge_y = [], []
-for s, d in G.edges():
-    if s in pos and d in pos:
-        x0, y0 = pos[s]; x1, y1 = pos[d]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
+for _, row in df_vis_sub.iterrows():
+    s = row["SrcAddr"]; d = row["DstAddr"]
+    if s not in pos or d not in pos:
+        continue
+    x0, y0 = pos[s]; x1, y1 = pos[d]
+    edge_x.extend([x0, x1, None])
+    edge_y.extend([y0, y1, None])
 
 edge_trace = go.Scatter(x=edge_x, y=edge_y, mode="lines", line=dict(width=0.3, color="#AAA"), hoverinfo="none")
 
+# nodes: auto-highlight top C&C
 node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
 for n, (x, y) in pos.items():
     role = node_roles.get(n, "Normal")
-    s = stats.loc[n] if n in stats.index else None
-    avg_prob = s["avg_prob"] if s is not None else 0
-    in_ratio = s["in_ratio"] if s is not None else 0
-    out_ratio = s["out_ratio"] if s is not None else 0
+    s = stats_sub.loc[n] if n in stats_sub.index else None
+    avg_prob = s["avg_prob"] if s is not None else stats.get(n, {"avg_prob": 0})["avg_prob"] if n in stats.index else 0
+    in_ratio = s["in_ratio"] if s is not None else stats.get(n, {"in_ratio": 0})["in_ratio"] if n in stats.index else 0
+    out_ratio = s["out_ratio"] if s is not None else stats.get(n, {"out_ratio": 0})["out_ratio"] if n in stats.index else 0
+
     node_x.append(x); node_y.append(y)
     node_text.append(f"{n}<br>Role:{role}<br>Prob:{avg_prob:.3f}<br>In:{in_ratio:.2f}<br>Out:{out_ratio:.2f}")
-    if role == "C&C":
+
+    if n in top_cnc_nodes:
+        node_color.append("#FF0000"); node_size.append(56)
+        node_text[-1] += "<br><b>TOP C&C (auto-detected)</b>"
+    elif role == "C&C":
         node_color.append("#FF0000"); node_size.append(36)
     elif role == "Suspicious":
         node_color.append("#FFA500"); node_size.append(16)
     else:
         node_color.append("#BFC9CA"); node_size.append(6)
 
-node_trace = go.Scatter(x=node_x, y=node_y, mode="markers",
-                        hovertext=node_text, hoverinfo="text",
-                        marker=dict(color=node_color, size=node_size, line=dict(width=1, color="#333")))
+node_trace = go.Scatter(
+    x=node_x, y=node_y, mode="markers",
+    hovertext=node_text, hoverinfo="text",
+    marker=dict(color=node_color, size=node_size, line=dict(width=1, color="#333"))
+)
 
 fig = go.Figure(data=[edge_trace, node_trace],
-    layout=go.Layout(title=f"Sensor {SELECTED_SENSOR_ID} – C&C Outbound-Aware Detection",
-                     title_x=0.5, showlegend=False, hovermode="closest",
-                     plot_bgcolor="white", paper_bgcolor="white",
-                     margin=dict(b=20, l=5, r=5, t=40),
-                     xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                     yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)))
+    layout=go.Layout(
+        title=f"Sensor {SELECTED_SENSOR_ID} – Outbound-Aware Auto C&C Detection (Top C&C edges forced)",
+        title_x=0.5, showlegend=False, hovermode="closest",
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(b=20, l=5, r=5, t=40),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+    )
+)
 
-html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_OutboundAware_{fileTimeStamp}.html")
+html_output = os.path.join(output_dir, f"BotnetGraph_Sensor{SELECTED_SENSOR_ID}_OutboundAuto_ForcedTopCNC_{fileTimeStamp}.html")
 fig.write_html(html_output)
 print(f"[Graph] Saved -> {html_output}")
 
-print("\nDone. Outbound-aware C&C detection complete.")
+# export top C&C nodes CSV
+if top_cnc_nodes:
+    top_df = stats.loc[top_cnc_nodes].reset_index().rename(columns={"index":"Node"})
+    top_df["cnc_score"] = top_df["avg_prob"] * (1 + top_df["out_ratio"]) * np.log1p(top_df["degree"])
+    top_df = top_df.sort_values("cnc_score", ascending=False)
+    csv_out = os.path.join(output_dir, f"TopCNC_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
+    top_df.to_csv(csv_out, index=False)
+    print(f"[Export] Top C&C CSV -> {csv_out}")
+
+print("\nDone. Outbound-aware auto C&C detection and visualization complete.")
