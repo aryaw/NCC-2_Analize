@@ -40,7 +40,7 @@ os.environ.update({
     "NUMBA_NUM_THREADS": "1",
 })
 
-SELECTED_SENSOR_ID = "1"
+SELECTED_SENSOR_ID = "2"
 fileTimeStamp, output_dir = setFileLocation()
 fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
