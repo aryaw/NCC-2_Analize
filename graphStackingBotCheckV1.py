@@ -34,7 +34,6 @@ from libInternal import (
     generate_plotly_evaluation_report
 )
 
-# === Thread & Memory Limits ===
 os.environ["JOBLIB_TEMP_FOLDER"] = "/tmp"
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
@@ -43,7 +42,6 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMBA_NUM_THREADS"] = "1"
 
-# === CONFIG ===
 SELECTED_SENSOR_ID = "1"
 fileTimeStamp, output_dir = setFileLocation()
 fileDataTimeStamp, outputdata_dir = setExportDataLocation()
@@ -51,7 +49,6 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
 
-# === LOAD DATA ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -81,7 +78,6 @@ print(df["Label"].value_counts())
 print("\n[DEBUG] Group by Label for Sensor:", SELECTED_SENSOR_ID)
 print(df[["SensorId", "Label"]].groupby("Label").size())
 
-# === DOWNSAMPLE (balance dataset) ===
 counts = df["Label"].value_counts()
 if len(counts) > 1:
     minority_label = counts.idxmin()
@@ -103,10 +99,8 @@ if len(counts) > 1:
 if df["Label"].nunique() < 2:
     raise RuntimeError(f"Sensor {SELECTED_SENSOR_ID} contains only one class — cannot train classifier.")
 
-# === CLEAN AND ENCODE ===
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
 
-# Keep Dir arrows as string and make numeric version for model
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
 df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
@@ -120,19 +114,16 @@ for c in cat_cols:
 features = [col for col in ["Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes"] if col in df.columns]
 print(f"[Features] Using features ({len(features)}): {features}")
 
-# === TRAIN/TEST SPLIT ===
 X = df[features].fillna(df[features].mean())
 y = np.rint(df["Label"]).astype(int)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
 print("[Split] y_train distribution:", np.bincount(y_train))
 print("[Split] y_test distribution:", np.bincount(y_test))
 
-# === SCALE ===
 scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-# === ENSEMBLE MODEL ===
 base_learners = [
     ("rf", RandomForestClassifier(n_estimators=50, max_depth=8, class_weight="balanced", random_state=42, n_jobs=1)),
     ("hgb", HistGradientBoostingClassifier(max_depth=6, random_state=42))
@@ -148,14 +139,12 @@ stack = StackingClassifier(
     verbose=1
 )
 
-# === TRAIN ===
 gc.collect()
 print(f"\n[Train] Training stacking model for Sensor {SELECTED_SENSOR_ID} ...")
 stack.fit(X_train_scaled, y_train)
 print("[Train] Done.")
 gc.collect()
 
-# === EVALUATE ===
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
 prec, rec, thr = precision_recall_curve(y_test, p_test)
 f1s = 2 * prec * rec / (prec + rec + 1e-12)
@@ -172,7 +161,6 @@ print("F1 Score:", f1_score(y_test, y_pred_test))
 print("ROC-AUC:", roc_auc_score(y_test, p_test))
 print("\nClassification Report:\n", classification_report(y_test, y_pred_test, digits=4))
 
-# === EXPORT DATA ===
 train_csv = os.path.join(outputdata_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv = os.path.join(outputdata_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 pd.concat([X_train, pd.Series(y_train, name="Label")], axis=1).to_csv(train_csv, index=False)
@@ -180,12 +168,10 @@ pd.concat([X_test, pd.Series(y_test, name="Label")], axis=1).to_csv(test_csv, in
 print(f"[Export] train -> {train_csv}")
 print(f"[Export] test  -> {test_csv}")
 
-# === APPLY MODEL ===
 df_scaled = scaler.transform(df[features])
 df["PredictedProb"] = stack.predict_proba(df_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 
-# === GRAPH VISUALIZATION ===
 print(f"[Graph] Generating visualization for Sensor {SELECTED_SENSOR_ID} with {len(df)} edges...")
 
 MAX_EDGES = 5000
