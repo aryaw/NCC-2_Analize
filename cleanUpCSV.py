@@ -41,7 +41,6 @@ def remove_duplicate_headers(in_path, out_path, header_key="StartTime", chunksiz
     print(f"Cleaning complete. Total rows written: {cleaned_rows:,}")
     print(f"Cleaned file saved at: {out_path}")
 
-    # === Verification ===
     print("\nVerifying header count...")
     header_count = 0
     with open(out_path, "r", encoding="utf-8") as f:
@@ -55,6 +54,5 @@ def remove_duplicate_headers(in_path, out_path, header_key="StartTime", chunksiz
         print(f"Warning: {header_count} headers still found. Check manually.")
 
 
-# === RUN ===
 if __name__ == "__main__":
     remove_duplicate_headers(input_path, output_path, header_key=header_key)

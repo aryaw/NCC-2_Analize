@@ -1,1 +1,1 @@
-grep -n "^StartTime," /home/arya/Documents/Pasca\ Stikom/BigData/Repo/DataLab/botNCC2/NCC2AllSensors.csv | head
+grep -n "^StartTime," /DataLab/botNCC2/NCC2AllSensors.csv | head

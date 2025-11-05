@@ -5,13 +5,11 @@ import plotly.express as px
 import webbrowser
 from libInternal import variableDump, getConnection, setFileLocation
 
-# === Initialization ===
 fileTimeStamp, output_dir = setFileLocation()
 file_chart_html = os.path.join(output_dir, f"NCC2_FlowsHistogram_Sensor_{fileTimeStamp}.html")
 
-csv_path = "/home/arya/Documents/Pasca Stikom/BigData/Repo/DataLab/botNCC2/NCC2AllSensors_clean.csv"
+csv_path = "/DataLab/botNCC2/NCC2AllSensors_clean.csv"
 
-# === Connect to DuckDB ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -19,7 +17,6 @@ except Exception as e:
     print(f"Warning: getConnection() failed ({e}), falling back to direct DuckDB connect.")
     con = duckdb.connect()
 
-# === Query: extract StartTime and SensorId filtered by Label like '%bot%' ===
 query = f"""
 SELECT 
     date_trunc('minute', StartTime) AS TimeGroup,
@@ -34,12 +31,10 @@ ORDER BY TimeGroup;
 df = con.sql(query).df()
 variableDump("Filtered histogram grouped by SensorId", df.head())
 
-# === Get unique SensorIds (limit to first 3 for visualization) ===
 unique_sensors = sorted(df["SensorId"].unique())[:3]
 
 print(f"Detected SensorIds (showing 3): {unique_sensors}")
 
-# === Create histogram for each SensorId ===
 charts_html = ""
 
 for sensor_id in unique_sensors:
@@ -74,7 +69,6 @@ for sensor_id in unique_sensors:
     </div>
     """
 
-# === Build Bootstrap HTML layout (grid format, 2 charts per row) ===
 combined_html = f"""
 <html>
 <head>
@@ -111,7 +105,6 @@ combined_html = f"""
 </html>
 """
 
-# === Save and open ===
 with open(file_chart_html, "w", encoding="utf-8") as f:
     f.write(combined_html)
 

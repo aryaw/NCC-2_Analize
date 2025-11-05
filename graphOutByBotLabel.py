@@ -6,16 +6,13 @@ import networkx as nx
 import webbrowser
 from libInternal import variableDump, getConnection, setFileLocation
 
-# === Initialization ===
 fileTimeStamp, output_dir = setFileLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 
-# === Save all graphs directly to output_dir ===
 graph_dir = output_dir
 os.makedirs(graph_dir, exist_ok=True)
 
-# === Connect to DuckDB ===
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -23,7 +20,6 @@ except Exception as e:
     print(f"Warning: getConnection() failed ({e}), falling back to direct DuckDB connect.")
     con = duckdb.connect()
 
-# === Query: Extract only botnet-related outgoing flows (Dir = '->'), handling spaces and case variations ===
 query = f"""
 SELECT 
     SensorId,
@@ -47,12 +43,10 @@ WHERE StartTime IS NOT NULL
 df = con.sql(query).df()
 variableDump("Botnet Outgoing Src-Dst by SensorId", df.head())
 
-# === Handle empty dataset ===
 if df.empty:
     print("No matching data found for botnet outgoing flows. Check Label and Dir values in your dataset.")
     exit(0)
 
-# === Get unique SensorIds ===
 unique_sensors = sorted(df["SensorId"].unique().tolist())
 if not unique_sensors:
     print("No SensorId values found in filtered dataset. Exiting.")
@@ -60,7 +54,6 @@ if not unique_sensors:
 
 print(f"Detected SensorIds: {unique_sensors}")
 
-# === Generate one network graph per SensorId ===
 for sensor_id in unique_sensors:
     df_sensor = df[df["SensorId"] == sensor_id]
     if df_sensor.empty:
@@ -174,7 +167,6 @@ for sensor_id in unique_sensors:
 
     print(f"Saved graph for SensorId {sensor_id}: {html_output}")
 
-# === Automatically open the first graph ===
 first_html = os.path.join(graph_dir, f"NCC2_Sensor_{unique_sensors[0]}_Graph_{fileTimeStamp}.html")
 if os.path.exists(first_html):
     webbrowser.open(f"file://{os.path.abspath(first_html)}")
