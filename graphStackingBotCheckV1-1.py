@@ -6,7 +6,7 @@ What we do?
  - pick decision threshold
  - predict on all rows, for the selected sensor
  - direction aware C&C detection using Dir field (->, <-, <->)
- - oNLY "C&C" or "Normal" > no Bot / suspicious
+ - only "C&C" or "Normal" > no Bot / suspicious
  - rendergraph
  - export train/test and detected C&C CSV
 """
@@ -55,26 +55,18 @@ os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMBA_NUM_THREADS"] = "1"
 
-
 SELECTED_SENSOR_ID = "1"
-
-
 MAX_EDGES = 5_000 
 RANDOM_STATE = 42
-
-
-
 CNC_MIN_AVG_PROB   = 0.75   
 CNC_MIN_DEGREE     = 3      
 CNC_MIN_IN_RATIO   = 0.60   
-
 
 fileTimeStamp, output_dir = setFileLocation()
 fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 graph_dir = output_dir
-
 
 try:
     con = getConnection()
@@ -108,20 +100,15 @@ print(df["Label"].value_counts(dropna=False))
 if df["Label"].nunique() < 2:
     raise RuntimeError(f"Sensor {SELECTED_SENSOR_ID} contains only one class — cannot train classifier.")
 
-
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"])
-
 
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")   
 df["Dir"]     = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)  
 
-
 for c in ["Proto", "State"]:
     if c in df.columns:
         df[c] = LabelEncoder().fit_transform(df[c].astype(str))
-
-
 
 features = [
     "Dir", "Dur", "Proto", "TotBytes", "TotPkts",
@@ -143,11 +130,9 @@ X_train, X_test, y_train, y_test = train_test_split(
 print("[Split] y_train distribution:", np.bincount(y_train))
 print("[Split] y_test  distribution:", np.bincount(y_test))
 
-
 scaler = MinMaxScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled  = scaler.transform(X_test)
-
 
 base_learners = [
     ("rf",  RandomForestClassifier(
@@ -178,7 +163,6 @@ stack.fit(X_train_scaled, y_train)
 print("[Train] Done.")
 gc.collect()
 
-
 p_test = stack.predict_proba(X_test_scaled)[:, 1]
 prec, rec, thr = precision_recall_curve(y_test, p_test)
 f1s = 2 * prec * rec / (prec + rec + 1e-12)
@@ -198,7 +182,6 @@ except Exception:
     print("ROC-AUC: NA (single class in split?)")
 print("\nClassification Report:\n", classification_report(y_test, y_pred_test, digits=4))
 
-
 train_csv = os.path.join(outputdata_dir, f"TrainData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 test_csv  = os.path.join(outputdata_dir, f"TestData_Sensor{SELECTED_SENSOR_ID}_{fileTimeStamp}.csv")
 
@@ -209,18 +192,14 @@ pd.concat([X_test.reset_index(drop=True),
 print(f"[Export] train -> {train_csv}")
 print(f"[Export] test  -> {test_csv}")
 
-
 df_scaled = scaler.transform(df[features])
 df["PredictedProb"]  = stack.predict_proba(df_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 
-
 print(f"[Graph] Generating visualization for Sensor {SELECTED_SENSOR_ID} with {len(df):,} edges...")
 df_vis = df.sample(n=MAX_EDGES, random_state=RANDOM_STATE) if len(df) > MAX_EDGES else df.copy()
 
-
 G = nx.from_pandas_edgelist(df_vis, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
-
 
 inbound_counts, outbound_counts = {}, {}
 prob_sum, edge_count = {}, {}
@@ -241,8 +220,7 @@ for _, row in df_vis.iterrows():
     prob_sum[dst] += prob
     edge_count[src] += 1
     edge_count[dst] += 1
-
-    
+   
     if dir_raw == "->":
         outbound_counts[src] += 1
         inbound_counts[dst] += 1
@@ -270,8 +248,7 @@ for node in G.nodes():
 
     total = in_ct + out_ct
     in_ratio = (in_ct / total) if total > 0 else 0.0
-
-    
+   
     if (
         (avg_p >= CNC_MIN_AVG_PROB) and
         (deg >= CNC_MIN_DEGREE) and
@@ -292,7 +269,6 @@ print(f"\n[Detected] {len(cnc_candidates)} C&C nodes (C&C-only mode).")
 for n, ap, ir, dg in cnc_candidates[:20]:
     print(f" - {n} | AvgProb={ap:.3f} InRatio={ir:.2f} Degree={dg}")
 
-
 if cnc_candidates:
     cnc_df = pd.DataFrame(
         [{"Node": n, "AvgProb": ap, "InRatio": ir, "Degree": dg} for (n, ap, ir, dg) in cnc_candidates]
@@ -301,10 +277,7 @@ if cnc_candidates:
     cnc_df.to_csv(cnc_csv, index=False)
     print(f"[Export] C&C CSV -> {cnc_csv}")
 
-
-
 pos = nx.kamada_kawai_layout(G)
-
 
 edge_x, edge_y = [], []
 for _, row in df_vis.iterrows():
@@ -321,7 +294,6 @@ edge_trace = go.Scatter(
     line=dict(width=0.6, color="#AAAAAA"),
     mode="lines", hoverinfo="none"
 )
-
 
 node_x, node_y, node_text, node_color, node_size = [], [], [], [], []
 for node in G.nodes():
