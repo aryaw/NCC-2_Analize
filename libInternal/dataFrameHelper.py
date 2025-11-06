@@ -15,6 +15,7 @@ from sklearn.metrics import (
     roc_curve,
     auc,
 )
+from typing import Tuple
 
 def optimize_dataframe(df):
     """downcast numeric columns to save memory."""
@@ -181,52 +182,23 @@ def generate_plotly_evaluation_report(
         "combined": combined_html
     }
 
-def generate_plotly_evaluation_report_smote(y_true, y_pred, y_prob, sensor_id, best_threshold, output_dir, file_timestamp):
-    """Generate Precision-Recall curve, ROC curve, and metric summary dashboard."""
-    prec, rec, _ = precision_recall_curve(y_true, y_prob)
-    fpr, tpr, _ = roc_curve(y_true, y_prob)
-    roc_auc_val = auc(fpr, tpr)
+def compute_activity_groups(sensor_df: pd.DataFrame) -> Tuple[pd.DataFrame, float]:
+    sdf = sensor_df.sort_values(["SrcAddr", "DstAddr", "StartTime"]).copy()
+    sdf["PrevTime"] = sdf.groupby(["SrcAddr", "DstAddr"])["StartTime"].shift(1)
+    sdf["TimeGap"]  = (sdf["StartTime"] - sdf["PrevTime"]).dt.total_seconds().fillna(0)
 
-    metrics = {
-        "Accuracy": round((y_pred == y_true).mean() * 100, 2),
-        "Precision": precision_score(y_true, y_pred),
-        "Recall": recall_score(y_true, y_pred),
-        "F1 Score": f1_score(y_true, y_pred),
-        "ROC-AUC": roc_auc_val
-    }
+    pos = sdf.loc[sdf["TimeGap"] > 0, "TimeGap"]
+    if len(pos) > 0:
+        median_gap = pos.median()
+        iqr = pos.quantile(0.75) - pos.quantile(0.25)
+        G = median_gap + 2 * iqr
+        if not np.isfinite(G) or G <= 0:
+            G = 30.0
+    else:
+        G = 30.0
 
-    fig = sp.make_subplots(rows=1, cols=2, subplot_titles=("Precision-Recall Curve", "ROC Curve"))
+    sdf["ActivityGroup"] = sdf.groupby(["SrcAddr", "DstAddr"])["TimeGap"].apply(lambda x: (x > G).cumsum())
+    return sdf, float(G)
 
-    # PR curve
-    fig.add_trace(go.Scatter(x=rec, y=prec, mode="lines", name="PR Curve", line=dict(width=2)), row=1, col=1)
-    fig.update_xaxes(title_text="Recall", row=1, col=1)
-    fig.update_yaxes(title_text="Precision", row=1, col=1)
-
-    # ROC curve
-    fig.add_trace(go.Scatter(x=fpr, y=tpr, mode="lines", name=f"ROC Curve (AUC={roc_auc_val:.3f})", line=dict(width=2)), row=1, col=2)
-    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random Guess", line=dict(dash="dash")), row=1, col=2)
-    
-    fig.update_xaxes(title_text="False Positive Rate", row=1, col=2)
-    fig.update_yaxes(title_text="True Positive Rate", row=1, col=2)
-
-    text_metrics = "<br>".join([f"<b>{k}:</b> {v:.4f}" if k != "Accuracy" else f"<b>{k}:</b> {v:.2f}%" for k, v in metrics.items()])
-    fig.add_annotation(
-        text=f"<b>Sensor {sensor_id} Evaluation Summary (SMOTE)</b><br>{text_metrics}<br><br><b>Best Threshold:</b> {best_threshold:.3f}",
-        xref="paper", yref="paper", x=0.5, y=-0.2, showarrow=False, align="left"
-    )
-
-    fig.update_layout(
-        title=f"Evaluation Dashboard (SMOTE) - Sensor {sensor_id}",
-        title_x=0.5,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        height=600,
-        width=1100
-    )
-
-    html_path = os.path.join(output_dir, f"EvaluationReport_Sensor{sensor_id}_SMOTE_{file_timestamp}.html")
-    fig.write_html(html_path)
-    print(f"[Report] Saved -> {html_path}")
-    return html_path
 
 
