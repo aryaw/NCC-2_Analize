@@ -44,14 +44,21 @@ def fast_label_to_binary(df):
     # result[df["Label"].astype(str).apply(lambda x: bool(bot_pattern.search(x)))] = 1
     # result[df["Label"].astype(str).apply(lambda x: bool(normal_pattern.search(x)))] = 0
 
-    # change regex with if/else logic
+    # def classify_label(label):
+    #     text = str(label)
+    #     if bot_pattern.search(text):
+    #         return 1
+    #     elif normal_pattern.search(text):
+    #         return 0
+    #     else:
+    #         return np.nan
+        
     def classify_label(label):
         text = str(label)
         if bot_pattern.search(text):
             return 1
-        elif normal_pattern.search(text):
-            return 0
         else:
+            return 0
             return np.nan
     result = df["Label"].apply(classify_label)
 
