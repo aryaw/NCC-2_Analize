@@ -41,7 +41,7 @@ from libInternal import (
 
 # -------------------- config --------------------
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 7_000_000
+MAX_ROWS_FOR_STACKING = 7_000_000   # you requested a high cap; be mindful of RAM
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -194,65 +194,8 @@ print("Recall:",    recall_score(y_test, y_pred_test))
 print("F1:",        f1_score(y_test, y_pred_test))
 print("ROC-AUC:",   roc_auc_score(y_test, p_test))
 
-# ------------------ PLOTLY EXPORTS: GLOBAL METRICS ------------------
-print("[Plot] Exporting Global Evaluation plots...")
-
-# ROC Curve
-roc_fig = go.Figure()
-roc_fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name='ROC Curve'))
-roc_fig.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines', name='Random', line=dict(dash='dash')))
-roc_fig.update_layout(
-    title=f"ROC Curve (AUC = {round(roc_auc_score(y_test, p_test), 4)})",
-    xaxis_title="False Positive Rate",
-    yaxis_title="True Positive Rate"
-)
-roc_path = os.path.join(output_dir, f"Global_ROC_{fileTimeStamp}.html")
-roc_fig.write_html(roc_path)
-print(f"[Plot] ROC curve saved -> {roc_path}")
-
-# Precision–Recall Curve across thresholds (skip inf/NaN)
-precisions, recalls = [], []
-for t in thr_roc:
-    preds = (p_test >= t).astype(int)
-    # guard for ill-defined precision when no positives predicted
-    try:
-        prc = precision_score(y_test, preds, zero_division=0)
-    except Exception:
-        prc = 0.0
-    rec = recall_score(y_test, preds)
-    precisions.append(prc)
-    recalls.append(rec)
-
-pr_fig = go.Figure()
-pr_fig.add_trace(go.Scatter(x=recalls, y=precisions, mode='lines', name='PR Curve'))
-pr_fig.update_layout(
-    title="Precision–Recall Curve",
-    xaxis_title="Recall",
-    yaxis_title="Precision"
-)
-pr_path = os.path.join(output_dir, f"Global_PR_{fileTimeStamp}.html")
-pr_fig.write_html(pr_path)
-print(f"[Plot] Precision–Recall plot saved -> {pr_path}")
-
-# Confusion Matrix
-cm = confusion_matrix(y_test, y_pred_test)
-cm_fig = px.imshow(
-    cm, text_auto=True, color_continuous_scale="Blues",
-    labels=dict(x="Predicted", y="Actual", color="Count"),
-    x=["Benign (0)", "Malicious (1)"],
-    y=["Benign (0)", "Malicious (1)"]
-)
-cm_fig.update_layout(title="Confusion Matrix")
-cm_path = os.path.join(output_dir, f"Global_ConfusionMatrix_{fileTimeStamp}.html")
-cm_fig.write_html(cm_path)
-print(f"[Plot] Confusion matrix saved -> {cm_path}")
-
-# free split arrays AFTER plotting
-del X_train_scaled, X_test_scaled, X_train, X_test, y_train, y_test, p_test, fpr, tpr, thr_roc, y_pred_test, cm
-gc.collect()
-
 # ------------------ full inference ------------------
-X_all_scaled = scaler.transform(X_full)     # float64
+X_all_scaled = scaler.transform(X_full) # float64
 df["PredictedProb"] = trained_model.predict_proba(X_all_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 del X_all_scaled, X_full, y_full
@@ -295,9 +238,7 @@ for sid in sorted(df["SensorId"].unique()):
         print(cnc_df.head(3)[["avg_prob", "degree", "in_ratio", "out_ratio", "cnc_score"]])
         detected_summary.append(cnc_df)
 
-        # ------------------ PLOTLY EXPORT FOR SENSOR ------------------
         print("[Plot] Exporting sensor plots...")
-
         cnc_top = cnc_df.sort_values("cnc_score", ascending=False).head(20).copy()
         cnc_top["ip"] = cnc_top.index.astype(str)
 
@@ -332,14 +273,5 @@ for sid in sorted(df["SensorId"].unique()):
 
     else:
         print("[Info] No C&C nodes detected in this sensor.")
-
-# ------------------ export ------------------
-# if detected_summary:
-#     summary_df = pd.concat(detected_summary, ignore_index=True)
-#     summary_csv = os.path.join(output_dir, f"CNC_AutoDetected_SafeAll_{fileTimeStamp}.csv")
-#     summary_df.to_csv(summary_csv, index=False)
-#     print(f"\n[Export] Saved -> {summary_csv}")
-# else:
-#     print("\n[Summary] No C&C detected in any sensor.")
 
 print("\nDone. Memory-safe stacking (passthrough=False) + per-sensor C&C detection + Plotly exports complete.")
