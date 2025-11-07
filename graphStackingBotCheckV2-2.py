@@ -35,7 +35,7 @@ from libInternal import (
 )
 
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 1_000_000
+MAX_ROWS_FOR_STACKING = 1_500_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -220,7 +220,7 @@ for sid in sorted(df["SensorId"].unique()):
     # heuristic: high prob, high degree, directional skew
     node_roles = {}
     for n, r in stats.iterrows():
-        if (r["avg_prob"] > 0.70) and (r["degree"] > 100) and ((r["in_ratio"] > 0.70) or (r["out_ratio"] > 0.70)):
+        if (r["avg_prob"] > 0.70) and (r["degree"] > 110) and ((r["in_ratio"] > 0.70) or (r["out_ratio"] > 0.70)):
             node_roles[n] = "C&C"
         else:
             node_roles[n] = "Normal"
