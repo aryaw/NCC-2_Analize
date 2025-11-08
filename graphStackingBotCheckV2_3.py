@@ -1,12 +1,10 @@
 import os
 import gc
 import re
+import math
 import duckdb
 import pandas as pd
 import numpy as np
-
-# Network graph imports
-import math
 import networkx as nx
 
 from sklearn.model_selection import train_test_split
@@ -22,9 +20,9 @@ from sklearn.metrics import (
     precision_score, recall_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
 )
 
-# Plotly for exports
-import plotly.graph_objects as go
+# Plotly only for per-sensor charts & 3D graphs
 import plotly.express as px
+import plotly.graph_objects as go
 
 # Safer threading on CPU-only boxes
 try:
@@ -43,9 +41,8 @@ from libInternal import (
     fast_label_to_binary,
 )
 
-#-- config--
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 7_000_000
+MAX_ROWS_FOR_STACKING = 10_000_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -61,7 +58,7 @@ fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 
-#-- load----
+#---- load------
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -82,19 +79,23 @@ if df.empty:
 
 df = optimize_dataframe(df)
 
+# Robust binary labels
 df = fast_label_to_binary(df)
 print(f"[Info] Loaded {len(df):,} flows across {df['SensorId'].nunique()} sensors")
 
 # preprocessing & features
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"]).copy()
 
+# Dir mapping
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
 df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
 
+# Categorical encodings
 for c in ["Proto", "State"]:
     df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
+# Feature engineering
 df["ByteRatio"]      = df["TotBytes"] / (df["TotPkts"] + 1)
 df["DurationRate"]   = df["TotPkts"]  / (df["Dur"] + 0.1)
 df["FlowIntensity"]  = df["SrcBytes"] / (df["TotBytes"] + 1)
@@ -110,9 +111,11 @@ features = [
     "SrcByteRatio", "TrafficBalance", "DurationPerPkt", "Intensity"
 ]
 
+# split & scale-
 X_full = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
 y_full = df["Label"].astype(int)
 
+# sample guard for stacking memory
 if len(df) > MAX_ROWS_FOR_STACKING:
     print(f"[Sample] Dataset too large ({len(df):,}), using {MAX_ROWS_FOR_STACKING:,} for model training...")
     df_sample = df.sample(n=MAX_ROWS_FOR_STACKING, random_state=RANDOM_STATE)
@@ -126,14 +129,14 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled  = scaler.transform(X_test)
+X_train_scaled = scaler.fit_transform(X_train)   # float64
+X_test_scaled  = scaler.transform(X_test)        # float64
 
-# training
+#training: stacking (passthrough=False)
 trained_model = None
 print("\n[Train] Starting model training (Stacking, passthrough=False)...")
 
-with threadpool_limits(limits=1):
+with threadpool_limits(limits=1):  # critical for stability on older CPUs
     try:
         base_learners = [
             ("rf", RandomForestClassifier(
@@ -173,7 +176,7 @@ with threadpool_limits(limits=1):
         ).fit(X_train_scaled, y_train)
         print("[Fallback] RandomForest model trained.")
 
-# evaluation
+#evaluation (printed only)
 p_test = trained_model.predict_proba(X_test_scaled)[:, 1]
 fpr, tpr, thr_roc = roc_curve(y_test, p_test)
 best_threshold = thr_roc[np.argmax(np.sqrt(tpr * (1 - fpr)))]
@@ -187,110 +190,76 @@ print("Recall:",    recall_score(y_test, y_pred_test))
 print("F1:",        f1_score(y_test, y_pred_test))
 print("ROC-AUC:",   roc_auc_score(y_test, p_test))
 
-# plot: ROC
-roc_fig = go.Figure()
-roc_fig.add_trace(go.Scatter(x=fpr, y=tpr, mode='lines', name='ROC'))
-roc_fig.add_trace(go.Scatter(x=[0,1], y=[0,1], mode='lines',
-                             name='Random', line=dict(dash='dash')))
-roc_fig.update_layout(
-    title=f"ROC Curve (AUC = {roc_auc_score(y_test, p_test):.4f})",
-    xaxis_title="FPR", yaxis_title="TPR"
-)
-roc_fig.write_html(os.path.join(output_dir, f"Global_ROC_{fileTimeStamp}.html"))
-
-# plot: PR curve
-precisions, recalls = [], []
-for t in thr_roc:
-    preds = (p_test >= t).astype(int)
-    prc = precision_score(y_test, preds, zero_division=0)
-    rec = recall_score(y_test, preds)
-    precisions.append(prc)
-    recalls.append(rec)
-
-pr_fig = go.Figure()
-pr_fig.add_trace(go.Scatter(x=recalls, y=precisions, mode='lines', name='PR'))
-pr_fig.update_layout(title="Precision–Recall Curve", xaxis_title="Recall", yaxis_title="Precision")
-pr_fig.write_html(os.path.join(output_dir, f"Global_PR_{fileTimeStamp}.html"))
-
-# plot: confusion matrix
-cm = confusion_matrix(y_test, y_pred_test)
-cm_fig = px.imshow(cm, text_auto=True, color_continuous_scale="Blues",
-                   labels=dict(x="Predicted", y="Actual", color="Count"),
-                   x=["Benign", "Malicious"], y=["Benign", "Malicious"])
-cm_fig.update_layout(title="Confusion Matrix")
-cm_fig.write_html(os.path.join(output_dir, f"Global_CM_{fileTimeStamp}.html"))
-
-del X_train_scaled, X_test_scaled, X_train, X_test, y_train, y_test, p_test, fpr, tpr, thr_roc, y_pred_test, cm
+# cleanup global split arrays (no global Plotly)
+del X_train_scaled, X_test_scaled, X_train, X_test, y_train, y_test
+del p_test, fpr, tpr, thr_roc, y_pred_test
 gc.collect()
 
 # full inference
-X_all_scaled = scaler.transform(X_full)
+X_all_scaled = scaler.transform(X_full)     # float64
 df["PredictedProb"] = trained_model.predict_proba(X_all_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
 del X_all_scaled, X_full, y_full
 gc.collect()
 
-# 3D C&C GRAPH FUNCTION
-def make_3d_cnc_graph(df_sensor, cnc_nodes, out_dir, sid, ts, normal_edges_cap=100):
+# 3D C&C GRAPH (C&C-only, cap 100 nodes)
+def make_3d_cnc_graph_cnc_only(df_sensor, cnc_nodes, out_dir, sid, ts, max_nodes=100):
+    if len(cnc_nodes) == 0:
+        print(f"[3D] Sensor {sid}: no C&C nodes to render plot.")
+        return
+
+    cnc_set = set(map(str, cnc_nodes))
+
+    # Keep edges where BOTH endpoints are C&C nodes
     edges_agg = (
         df_sensor.groupby(["SrcAddr", "DstAddr"])
         .size().reset_index(name="weight")
     )
+    edges_agg["SrcAddr"] = edges_agg["SrcAddr"].astype(str)
+    edges_agg["DstAddr"] = edges_agg["DstAddr"].astype(str)
+    cnc_edges = edges_agg[
+        edges_agg["SrcAddr"].isin(cnc_set) & edges_agg["DstAddr"].isin(cnc_set)
+    ].copy()
 
-    cnc_set = set(map(str, cnc_nodes))
-    edges_agg["is_cnc_edge"] = (
-        edges_agg["SrcAddr"].astype(str).isin(cnc_set) |
-        edges_agg["DstAddr"].astype(str).isin(cnc_set)
-    )
+    if cnc_edges.empty:
+        print(f"[3D] Sensor {sid}: no C&C edges; skipping 3D graph.")
+        return
 
-    cnc_edges = edges_agg[edges_agg["is_cnc_edge"]].copy()
-    normal_pool = edges_agg[~edges_agg["is_cnc_edge"]].copy()
-
-    if len(normal_pool) > 0:
-        normal_sample = normal_pool.sample(
-            n=min(normal_edges_cap, len(normal_pool)),
-            random_state=RANDOM_STATE
-        )
-    else:
-        normal_sample = normal_pool
-
-    edges_keep = pd.concat([cnc_edges, normal_sample], ignore_index=True)
-
-    node_ids = pd.unique(pd.concat([
-        edges_keep["SrcAddr"].astype(str),
-        edges_keep["DstAddr"].astype(str)
-    ], ignore_index=True))
-
+    # Weighted degree among C&C-only subgraph
     deg_df = pd.concat([
-        edges_keep.groupby("SrcAddr")["weight"].sum().rename("out_w"),
-        edges_keep.groupby("DstAddr")["weight"].sum().rename("in_w")
+        cnc_edges.groupby("SrcAddr")["weight"].sum().rename("out_w"),
+        cnc_edges.groupby("DstAddr")["weight"].sum().rename("in_w")
     ], axis=1).fillna(0.0)
     deg_df["degree_w"] = deg_df["in_w"] + deg_df["out_w"]
 
-    G = nx.DiGraph()
-    for n in node_ids:
-        role = "C&C" if n in cnc_set else "Normal"
-        degw = float(deg_df.loc[n, "degree_w"]) if n in deg_df.index else 0.0
-        G.add_node(n, role=role, degree_w=degw)
+    # Select top-N C&C nodes by degree_w
+    top_nodes = deg_df.sort_values("degree_w", ascending=False).head(max_nodes).index.tolist()
+    top_set = set(top_nodes)
 
-    for _, row in edges_keep.iterrows():
-        G.add_edge(str(row["SrcAddr"]),
-                   str(row["DstAddr"]),
-                   weight=float(row["weight"]),
-                   is_cnc_edge=bool(row["is_cnc_edge"]))
+    # Subset edges to only top-N nodes
+    sub_edges = cnc_edges[
+        cnc_edges["SrcAddr"].isin(top_set) & cnc_edges["DstAddr"].isin(top_set)
+    ].copy()
 
-    if len(G.nodes) == 0:
-        print(f"[3D] Sensor {sid}: nothing to plot.")
+    if sub_edges.empty:
+        print(f"[3D] Sensor {sid}: top-{max_nodes} C&C nodes have no mutual edges.")
         return
 
-    pos3d = nx.spring_layout(G, dim=3, seed=RANDOM_STATE, iterations=100)
-    import plotly.graph_objects as go
+    # Build graph
+    G = nx.DiGraph()
+    for n in top_nodes:
+        degw = float(deg_df.loc[n, "degree_w"]) if n in deg_df.index else 0.0
+        G.add_node(n, role="C&C", degree_w=degw)
 
-    def edge_trace(mask_is_cnc):
+    for _, row in sub_edges.iterrows():
+        G.add_edge(row["SrcAddr"], row["DstAddr"], weight=float(row["weight"]))
+
+    # Layout & figure
+    pos3d = nx.spring_layout(G, dim=3, seed=RANDOM_STATE, iterations=100)
+
+    def edge_trace():
         xs, ys, zs = [], [], []
         for u, v, d in G.edges(data=True):
-            if bool(d["is_cnc_edge"]) != mask_is_cnc:
-                continue
             x0, y0, z0 = pos3d[u]
             x1, y1, z1 = pos3d[v]
             xs += [x0, x1, None]
@@ -299,54 +268,44 @@ def make_3d_cnc_graph(df_sensor, cnc_nodes, out_dir, sid, ts, normal_edges_cap=1
         return go.Scatter3d(
             x=xs, y=ys, z=zs,
             mode="lines",
-            line=dict(width=3 if mask_is_cnc else 1),
-            opacity=0.9 if mask_is_cnc else 0.3,
-            name="C&C edges" if mask_is_cnc else "Normal edges"
+            line=dict(width=2),
+            opacity=0.7,
+            name="Edges (C&C↔C&C)"
         )
 
-    def node_trace(role):
+    def node_trace():
         xs, ys, zs, texts, sizes = [], [], [], [], []
         for n, data in G.nodes(data=True):
-            if data["role"] != role:
-                continue
             x, y, z = pos3d[n]
             xs.append(x); ys.append(y); zs.append(z)
             degw = float(data["degree_w"])
-            size = 6 + 4 * math.log1p(degw)
-            sizes.append(size)
-            texts.append(f"{n}<br>deg={degw:.0f}")
+            sizes.append(6 + 4 * math.log1p(degw))
+            texts.append(f"{n}<br>weighted_degree={degw:.0f}")
         return go.Scatter3d(
-            x=xs, y=ys, z=zs,
-            mode="markers",
+            x=xs, y=ys, z=zs, mode="markers",
             marker=dict(size=sizes),
-            name=f"{role} nodes",
+            name="C&C nodes",
             text=texts, hoverinfo="text"
         )
 
-    fig = go.Figure(data=[
-        edge_trace(mask_is_cnc=True),
-        edge_trace(mask_is_cnc=False),
-        node_trace("C&C"),
-        node_trace("Normal"),
-    ])
-
+    fig = go.Figure(data=[edge_trace(), node_trace()])
     fig.update_layout(
-        title=f"Sensor {sid} – 3D C&C Network",
+        title=f"Sensor {sid} – 3D C&C Network (C&C-only, top {min(max_nodes, len(top_nodes))} nodes)",
         scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False)),
         margin=dict(l=0, r=0, t=40, b=0)
     )
 
-    out_path = os.path.join(out_dir, f"Sensor{sid}_3D_CNC_{ts}.html")
+    out_path = os.path.join(out_dir, f"Sensor{sid}_3D_CNC_onlyTop{min(max_nodes, len(top_nodes))}_{ts}.html")
     fig.write_html(out_path)
-    print(f"[3D] Saved 3D network -> {out_path}")
+    print(f"[3D] Saved 3D C&C-only network -> {out_path}")
 
-
-# per-sensor C&C detection
+#-- per-sensor C&C detection--
 detected_summary = []
 for sid in sorted(df["SensorId"].unique()):
     print(f"\n=== [Sensor {sid}] Auto C&C Detection ===")
     df_s = df[df["SensorId"] == sid].copy()
 
+    # per-node stats (in/out)
     agg_in = df_s.groupby("DstAddr")["PredictedProb"].agg(["count", "mean"]) \
                  .rename(columns={"count": "in_ct", "mean": "in_prob"})
     agg_out = df_s.groupby("SrcAddr")["PredictedProb"].agg(["count", "mean"]) \
@@ -360,7 +319,15 @@ for sid in sorted(df["SensorId"].unique()):
 
     node_roles = {}
     for n, r in stats.iterrows():
-        if (r["avg_prob"] > 0.70) and (r["degree"] > 110) and ((r["in_ratio"] > 0.70) or (r["out_ratio"] > 0.70)):
+        # deg_thr = max(15, stats["degree"].quantile(0.90))
+        # prob_thr = max(0.55, stats["avg_prob"].quantile(0.80))
+        # ratio_thr = 0.65
+
+        # if (r["avg_prob"] > prob_thr) and (r["degree"] > deg_thr) and ((r["in_ratio"] > ratio_thr) or (r["out_ratio"] > ratio_thr)):
+        #     node_roles[n] = "C&C"
+
+        # if (r["avg_prob"] > 0.60) and (r["degree"] > 100) and ((r["in_ratio"] > 0.60) or (r["out_ratio"] > 0.70)):
+        if (r["avg_prob"] > 0.60) and (r["degree"] > 100) and (r["out_ratio"] > 0.70):
             node_roles[n] = "C&C"
         else:
             node_roles[n] = "Normal"
@@ -377,33 +344,49 @@ for sid in sorted(df["SensorId"].unique()):
 
         cnc_top = cnc_df.sort_values("cnc_score", ascending=False).head(20).copy()
         cnc_top["ip"] = cnc_top.index.astype(str)
-
         bar_fig = px.bar(
             cnc_top, x="ip", y="cnc_score",
             hover_data=["avg_prob", "degree", "in_ratio", "out_ratio"],
-            title=f"Sensor {sid} – Top C&C Candidates"
+            title=f"Sensor {sid} – Top C&C Candidates (Top 20)"
         )
         bar_fig.update_layout(xaxis_tickangle=-45)
         bar_fig.write_html(os.path.join(output_dir, f"Sensor{sid}_CNC_Score_{fileTimeStamp}.html"))
 
+        # Per-sensor scatter (all C&C)
         scatter_fig = px.scatter(
             cnc_df.reset_index().rename(columns={"index": "ip"}),
             x="degree", y="avg_prob", size="cnc_score",
             hover_name="ip",
-            title=f"Sensor {sid} – AvgProb vs Degree"
+            hover_data=["in_ratio", "out_ratio"],
+            title=f"Sensor {sid} – AvgProb vs Degree (C&C)"
         )
         scatter_fig.write_html(os.path.join(output_dir, f"Sensor{sid}_CNC_Scatter_{fileTimeStamp}.html"))
 
-        make_3d_cnc_graph(
+        # 3D C&C-only network (cap 100 nodes)
+        make_3d_cnc_graph_cnc_only(
             df_sensor=df_s,
             cnc_nodes=cnc_df.index.tolist(),
             out_dir=output_dir,
             sid=sid,
             ts=fileTimeStamp,
-            normal_edges_cap=100
+            max_nodes=100
         )
-
     else:
-        print("[Info] No C&C nodes detected in this sensor.")
+        print("[Info] No C&C nodes detected — printing top suspicious candidates")
+        temp = stats.copy()
+        temp["score"] = temp["avg_prob"] * np.log1p(temp["degree"])
+        print(temp.sort_values("score", ascending=False).head(10)[
+            ["avg_prob", "degree", "in_ratio", "out_ratio", "score"]
+        ])
 
-print("\nDone. Memory-safe stacking + per-sensor C&C + 3D graph export complete.")
+
+# export CSV summary
+if detected_summary:
+    summary_df = pd.concat(detected_summary, ignore_index=True)
+    summary_csv = os.path.join(output_dir, f"CNC_AutoDetected_SafeAll_{fileTimeStamp}.csv")
+    summary_df.to_csv(summary_csv, index=False)
+    print(f"\n[Export] Saved -> {summary_csv}")
+else:
+    print("\n[Summary] No C&C detected in any sensor.")
+
+print("\nDone. Stacking (passthrough=False) + per-sensor Top-20 bar + scatter + C&C-only 3D (top 100 nodes) complete.")
