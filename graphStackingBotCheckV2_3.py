@@ -43,7 +43,7 @@ from libInternal import (
 )
 
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 8_500_000
+MAX_ROWS_FOR_STACKING = 8_200_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
