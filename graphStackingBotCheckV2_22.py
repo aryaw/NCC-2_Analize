@@ -44,7 +44,7 @@ from libInternal import (
 
 # -------------------- config --------------------
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 9_000_000
+MAX_ROWS_FOR_STACKING = 8_000_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -264,10 +264,126 @@ for sid in sorted(df["SensorId"].unique()):
         log_ram(f"Sensor {sid} After C&C Score")
 
         # === Plotly 3D interactive network graph ===
-        print("[Plot] Generating 3D interactive network graph...")
-        G = nx.from_pandas_edgelist(
+        # print("[Plot] Generating 3D interactive network graph...")
+        # G = nx.from_pandas_edgelist(
+        #     df_s, source="SrcAddr", target="DstAddr", create_using=nx.DiGraph()
+        # )
+
+        # node_color = []
+        # node_size = []
+        # for n in G.nodes():
+        #     if n in cc_nodes:
+        #         node_color.append("red")
+        #         node_size.append(10)
+        #     else:
+        #         node_color.append("blue")
+        #         node_size.append(4)
+
+        # pos = nx.spring_layout(G, dim=3, seed=RANDOM_STATE)
+        # x_nodes = [pos[k][0] for k in G.nodes()]
+        # y_nodes = [pos[k][1] for k in G.nodes()]
+        # z_nodes = [pos[k][2] for k in G.nodes()]
+
+        # edge_x, edge_y, edge_z = [], [], []
+        # for e in G.edges():
+        #     x0, y0, z0 = pos[e[0]]
+        #     x1, y1, z1 = pos[e[1]]
+        #     edge_x += [x0, x1, None]
+        #     edge_y += [y0, y1, None]
+        #     edge_z += [z0, z1, None]
+
+        # edge_trace = go.Scatter3d(
+        #     x=edge_x, y=edge_y, z=edge_z,
+        #     mode='lines',
+        #     line=dict(color='gray', width=1),
+        #     hoverinfo='none'
+        # )
+
+        # node_trace = go.Scatter3d(
+        #     x=x_nodes, y=y_nodes, z=z_nodes,
+        #     mode='markers',
+        #     marker=dict(
+        #         size=node_size,
+        #         color=node_color,
+        #         opacity=0.9
+        #     ),
+        #     text=[f"{n}" for n in G.nodes()],
+        #     hoverinfo='text'
+        # )
+
+        # fig = go.Figure(
+        #     data=[edge_trace, node_trace],
+        #     layout=go.Layout(
+        #         title=f"Sensor {sid} – 3D Network Graph (C&C Highlighted)",
+        #         showlegend=False,
+        #         margin=dict(l=0, r=0, b=0, t=40),
+        #         scene=dict(
+        #             xaxis=dict(showbackground=False),
+        #             yaxis=dict(showbackground=False),
+        #             zaxis=dict(showbackground=False)
+        #         ),
+        #         annotations=[dict(
+        #             text="Red = C&C Node | Blue = Normal Node",
+        #             showarrow=False,
+        #             xref="paper", yref="paper",
+        #             x=0, y=-0.05
+        #         )]
+        #     )
+        # )
+
+        # graph_path = os.path.join(output_dir, f"Sensor{sid}_3DGraph_{fileTimeStamp}.html")
+        # fig.write_html(graph_path)
+        # print(f"[Plot] 3D network graph saved -> {graph_path}")
+        # log_ram(f"Sensor {sid} After Plot")
+
+        # === Plotly 3D interactive network graph (memory-safe) ===
+        print("[Plot] Generating 3D interactive network graph (safe)...")
+
+        # Dynamically set limits based on available RAM
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        if available_gb < 4:
+            MAX_NODES, MAX_EDGES = 200, 400
+        elif available_gb < 8:
+            MAX_NODES, MAX_EDGES = 300, 600
+        else:
+            MAX_NODES, MAX_EDGES = 500, 800
+
+        print(f"[Info] Available RAM: {available_gb:.2f} GB -> Using limits: "
+            f"{MAX_NODES} nodes, {MAX_EDGES} edges")
+        log_ram(f"Sensor {sid} Graph Limits: {MAX_NODES} nodes, {MAX_EDGES} edges")
+
+        # Build directed graph from flows
+        G_full = nx.from_pandas_edgelist(
             df_s, source="SrcAddr", target="DstAddr", create_using=nx.DiGraph()
         )
+
+        # Prioritize: all C&C nodes + their neighbors
+        cnc_neighbors = set()
+        for cnc in cc_nodes:
+            if cnc in G_full:
+                cnc_neighbors.update(G_full.predecessors(cnc))
+                cnc_neighbors.update(G_full.successors(cnc))
+
+        nodes_keep = set(cc_nodes) | cnc_neighbors
+        if len(nodes_keep) > MAX_NODES:
+            # Sample neighbors to limit total nodes
+            normal_nodes = [n for n in nodes_keep if n not in cc_nodes]
+            sample_normal = np.random.choice(normal_nodes, size=min(MAX_NODES, len(normal_nodes)), replace=False)
+            nodes_keep = set(cc_nodes) | set(sample_normal)
+
+        # Subgraph for plotting
+        G = G_full.subgraph(nodes_keep).copy()
+        del G_full
+
+        # Limit edges
+        all_edges = list(G.edges())
+        if len(all_edges) > MAX_EDGES:
+            np.random.seed(RANDOM_STATE)
+            edges_sample = np.random.choice(len(all_edges), size=MAX_EDGES, replace=False)
+            edges_keep = [all_edges[i] for i in edges_sample]
+            G = nx.DiGraph(edges_keep)
+
+        print(f"[Plot] Drawing {len(G.nodes())} nodes and {len(G.edges())} edges")
 
         node_color = []
         node_size = []
@@ -279,7 +395,8 @@ for sid in sorted(df["SensorId"].unique()):
                 node_color.append("blue")
                 node_size.append(4)
 
-        pos = nx.spring_layout(G, dim=3, seed=RANDOM_STATE)
+        pos = nx.spring_layout(G, dim=3, seed=RANDOM_STATE, iterations=60)
+
         x_nodes = [pos[k][0] for k in G.nodes()]
         y_nodes = [pos[k][1] for k in G.nodes()]
         z_nodes = [pos[k][2] for k in G.nodes()]
@@ -314,7 +431,7 @@ for sid in sorted(df["SensorId"].unique()):
         fig = go.Figure(
             data=[edge_trace, node_trace],
             layout=go.Layout(
-                title=f"Sensor {sid} – 3D Network Graph (C&C Highlighted)",
+                title=f"Sensor {sid} – 3D Network Graph (Safe, {len(G.nodes())} nodes)",
                 showlegend=False,
                 margin=dict(l=0, r=0, b=0, t=40),
                 scene=dict(
@@ -323,7 +440,7 @@ for sid in sorted(df["SensorId"].unique()):
                     zaxis=dict(showbackground=False)
                 ),
                 annotations=[dict(
-                    text="Red = C&C Node | Blue = Normal Node",
+                    text="Red = C&C Node | Blue = Normal Node (sampled)",
                     showarrow=False,
                     xref="paper", yref="paper",
                     x=0, y=-0.05
@@ -331,10 +448,11 @@ for sid in sorted(df["SensorId"].unique()):
             )
         )
 
-        graph_path = os.path.join(output_dir, f"Sensor{sid}_3DGraph_{fileTimeStamp}.html")
+        graph_path = os.path.join(output_dir, f"Sensor{sid}_3DGraphSafe_{fileTimeStamp}.html")
         fig.write_html(graph_path)
-        print(f"[Plot] 3D network graph saved -> {graph_path}")
-        log_ram(f"Sensor {sid} After Plot")
+        print(f"[Plot] 3D safe network graph saved -> {graph_path}")
+        log_ram(f"Sensor {sid} After Safe Plot")
+
 
     else:
         print("[Info] No C&C nodes detected in this sensor.")
