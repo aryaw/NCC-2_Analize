@@ -6,9 +6,7 @@ from markdown import markdown
 OUTPUT_FOLDER = os.path.join(os.getcwd(), "assets/outputs")
 PRESENT_FOLDER = os.path.join(os.getcwd(), "assets/present")
 PORT = 5000
-
 app = Flask(__name__)
-
 pd.set_option('display.float_format', '{:,.0f}'.format)
 
 HTML_TEMPLATE = """
