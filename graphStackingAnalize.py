@@ -43,7 +43,7 @@ from libInternal import (
 )
 
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 8_000_000
+MAX_ROWS_FOR_STACKING = 8_200_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -238,7 +238,7 @@ for sid in sorted(df["SensorId"].unique()):
 
     node_roles = {}
     for n, r in stats.iterrows():
-        if (r["avg_prob"] > 0.65) and (r["degree"] > 100) and (r["out_ratio"] > 0.60):
+        if (r["avg_prob"] > 0.70) and (r["degree"] > 100) and (r["out_ratio"] > 0.70):
             node_roles[n] = "C&C"
         else:
             node_roles[n] = "Normal"
