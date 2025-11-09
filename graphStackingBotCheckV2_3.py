@@ -42,7 +42,7 @@ from libInternal import (
 )
 
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 10_000_000
+MAX_ROWS_FOR_STACKING = 8_000_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -79,11 +79,11 @@ if df.empty:
 
 df = optimize_dataframe(df)
 
-# Robust binary labels
+# robust binary labels
 df = fast_label_to_binary(df)
 print(f"[Info] Loaded {len(df):,} flows across {df['SensorId'].nunique()} sensors")
 
-# preprocessing & features
+# removes all rows from the DataFrame that have a NaN
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"]).copy()
 
 # Dir mapping
@@ -111,8 +111,10 @@ features = [
     "SrcByteRatio", "TrafficBalance", "DurationPerPkt", "Intensity"
 ]
 
-# split & scale-
+# replace ifinity & negatif infinity with NaN and fill with 0
 X_full = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
+
+# cast as int value
 y_full = df["Label"].astype(int)
 
 # sample guard for stacking memory
