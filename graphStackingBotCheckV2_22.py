@@ -42,7 +42,6 @@ from libInternal import (
     fast_label_to_binary,
 )
 
-# -------------------- config --------------------
 RANDOM_STATE = 42
 MAX_ROWS_FOR_STACKING = 8_000_000
 SAFE_THREADS = "1"
@@ -78,7 +77,6 @@ def log_ram(tag=""):
     with open(memory_log_path, "a") as f:
         f.write(f"{now},{tag},{rss:.2f},{vms:.2f}\n")
 
-# -------------------- load ----------------------
 try:
     con = getConnection()
     print("Using connection from getConnection()")
@@ -105,7 +103,6 @@ log_ram("After Optimize+Label")
 
 print(f"[Info] Loaded {len(df):,} flows across {df['SensorId'].nunique()} sensors")
 
-# ---------------- preprocessing & features ----------------
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"]).copy()
 log_ram("After DropNA")
 
@@ -229,7 +226,7 @@ log_ram("After Full Inference")
 # ------------------ per-sensor C&C detection ------------------
 detected_summary = []
 for sid in sorted(df["SensorId"].unique()):
-    print(f"\n=== [Sensor {sid}] Auto C&C Detection ===")
+    print(f"\n=== [Sensor {sid}] Auto C&C Detection")
     log_ram(f"Sensor {sid} Start")
 
     df_s = df[df["SensorId"] == sid].copy()
@@ -263,80 +260,7 @@ for sid in sorted(df["SensorId"].unique()):
         detected_summary.append(cnc_df)
         log_ram(f"Sensor {sid} After C&C Score")
 
-        # === Plotly 3D interactive network graph ===
-        # print("[Plot] Generating 3D interactive network graph...")
-        # G = nx.from_pandas_edgelist(
-        #     df_s, source="SrcAddr", target="DstAddr", create_using=nx.DiGraph()
-        # )
-
-        # node_color = []
-        # node_size = []
-        # for n in G.nodes():
-        #     if n in cc_nodes:
-        #         node_color.append("red")
-        #         node_size.append(10)
-        #     else:
-        #         node_color.append("blue")
-        #         node_size.append(4)
-
-        # pos = nx.spring_layout(G, dim=3, seed=RANDOM_STATE)
-        # x_nodes = [pos[k][0] for k in G.nodes()]
-        # y_nodes = [pos[k][1] for k in G.nodes()]
-        # z_nodes = [pos[k][2] for k in G.nodes()]
-
-        # edge_x, edge_y, edge_z = [], [], []
-        # for e in G.edges():
-        #     x0, y0, z0 = pos[e[0]]
-        #     x1, y1, z1 = pos[e[1]]
-        #     edge_x += [x0, x1, None]
-        #     edge_y += [y0, y1, None]
-        #     edge_z += [z0, z1, None]
-
-        # edge_trace = go.Scatter3d(
-        #     x=edge_x, y=edge_y, z=edge_z,
-        #     mode='lines',
-        #     line=dict(color='gray', width=1),
-        #     hoverinfo='none'
-        # )
-
-        # node_trace = go.Scatter3d(
-        #     x=x_nodes, y=y_nodes, z=z_nodes,
-        #     mode='markers',
-        #     marker=dict(
-        #         size=node_size,
-        #         color=node_color,
-        #         opacity=0.9
-        #     ),
-        #     text=[f"{n}" for n in G.nodes()],
-        #     hoverinfo='text'
-        # )
-
-        # fig = go.Figure(
-        #     data=[edge_trace, node_trace],
-        #     layout=go.Layout(
-        #         title=f"Sensor {sid} – 3D Network Graph (C&C Highlighted)",
-        #         showlegend=False,
-        #         margin=dict(l=0, r=0, b=0, t=40),
-        #         scene=dict(
-        #             xaxis=dict(showbackground=False),
-        #             yaxis=dict(showbackground=False),
-        #             zaxis=dict(showbackground=False)
-        #         ),
-        #         annotations=[dict(
-        #             text="Red = C&C Node | Blue = Normal Node",
-        #             showarrow=False,
-        #             xref="paper", yref="paper",
-        #             x=0, y=-0.05
-        #         )]
-        #     )
-        # )
-
-        # graph_path = os.path.join(output_dir, f"Sensor{sid}_3DGraph_{fileTimeStamp}.html")
-        # fig.write_html(graph_path)
-        # print(f"[Plot] 3D network graph saved -> {graph_path}")
-        # log_ram(f"Sensor {sid} After Plot")
-
-        # === Plotly 3D interactive network graph (memory-safe) ===
+        # Plotly 3D interactive network graph (memory-safe)
         print("[Plot] Generating 3D interactive network graph (safe)...")
 
         # Dynamically set limits based on available RAM
