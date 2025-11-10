@@ -238,7 +238,7 @@ for sid in sorted(df["SensorId"].unique()):
 
     node_roles = {}
     for n, r in stats.iterrows():
-        if (r["avg_prob"] > 0.60) and (r["degree"] > 100) and (r["out_ratio"] > 0.60):
+        if (r["avg_prob"] > 0.55) and (r["degree"] > 100) and (r["out_ratio"] > 0.60):
             node_roles[n] = "C&C"
         else:
             node_roles[n] = "Normal"
