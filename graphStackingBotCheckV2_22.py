@@ -308,15 +308,29 @@ for sid in sorted(df["SensorId"].unique()):
 
     df_s = df[df["SensorId"] == sid].copy()
 
+    # inbound traffic per node
     agg_in = df_s.groupby("DstAddr")["PredictedProb"].agg(["count", "mean"]) \
                  .rename(columns={"count": "in_ct", "mean": "in_prob"})
+    
+    # outbound traffic per node
     agg_out = df_s.groupby("SrcAddr")["PredictedProb"].agg(["count", "mean"]) \
                   .rename(columns={"count": "out_ct", "mean": "out_prob"})
+    
+    # combine inbound & outbound statistics
     stats = agg_in.join(agg_out, how="outer").fillna(0)
 
-    stats["in_ratio"] = stats["in_ct"]  / (stats["in_ct"] + stats["out_ct"] + 1e-9)
-    stats["out_ratio"] = stats["out_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9)
-    stats["avg_prob"] = (stats["in_prob"] + stats["out_prob"]) / 2
+    # high in_ratio > frequently receives traffic (server-like)
+    stats["in_ratio"] = stats["in_ct"]  / (stats["in_ct"] + stats["out_ct"] + 1e-9) # 1e-9 prevents division by zero
+    
+    # high out_ratio > frequently sends traffic (client-like bot)
+    stats["out_ratio"] = stats["out_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9) # 1e-9 prevents division by zero
+
+    # degree = total number of connections (edges) that a node (IP) has in the network
+    # degree is an important measure in graph analysis
+    # C&C servers often have high degree, bot clients have low-medium degree
+    stats["avg_prob"] = (stats["in_prob"] + stats["out_prob"]) / 2 # get average prob, by taking the average, we get a general idea of ​​how “malicious” the node is overall
+    
+    # degree = total number of connections (edges) that a node (IP) has in the network
     stats["degree"] = stats["in_ct"] + stats["out_ct"]
 
     node_roles = {}
@@ -326,6 +340,7 @@ for sid in sorted(df["SensorId"].unique()):
         else:
             node_roles[n] = "Normal"
 
+    # map as [], [IP:Role]
     cc_nodes = [n for n, role in node_roles.items() if role == "C&C"]
     print(f"[Detected] {len(cc_nodes)} potential C&C nodes")
 
@@ -337,8 +352,7 @@ for sid in sorted(df["SensorId"].unique()):
         detected_summary.append(cnc_df)
         log_ram(f"Sensor {sid} After C&C Score")
 
-        # Plotly 3D interactive network graph (memory-safe)
-        print("[Plot] Generating 3D interactive network graph (safe)...")
+        print("[Plot] Generating 3D interactive network graph")
 
         # Dynamically set limits based on available RAM
         available_gb = psutil.virtual_memory().available / (1024 ** 3)
