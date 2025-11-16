@@ -282,10 +282,20 @@ print("Recall:",    recall_score(y_test, y_pred_test))
 print("F1:",        f1_score(y_test, y_pred_test))
 print("ROC-AUC:",   roc_auc_score(y_test, p_test))
 
-# full inference
+# full inference--
+
+# convert all X_full features to standard scale (mean=0, std=1) > consistent with training, no refitting allowed
 X_all_scaled = scaler.transform(X_full)
+
+# probability prediction for all data
+# rowValue nearby 0 >>> normal
+# rowValue nearby 1 >>> bot
 df["PredictedProb"] = trained_model.predict_proba(X_all_scaled)[:, 1]
+
+# label prediction (0 = normal, 1 = botnet)
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
+
+# ram cleanup
 del X_all_scaled, X_full, y_full
 gc.collect()
 log_ram("After Full Inference")
