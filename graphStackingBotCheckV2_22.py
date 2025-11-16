@@ -347,7 +347,9 @@ for sid in sorted(df["SensorId"].unique()):
     if cc_nodes:
         cnc_df = stats.loc[cc_nodes].copy()
         cnc_df["SensorId"] = sid
+        
         cnc_df["cnc_score"] = cnc_df["avg_prob"] * (1 + cnc_df["in_ratio"] + cnc_df["out_ratio"]) * np.log1p(cnc_df["degree"])
+
         cnc_df = cnc_df.sort_values("cnc_score", ascending=False)
         detected_summary.append(cnc_df)
         log_ram(f"Sensor {sid} After C&C Score")
@@ -367,12 +369,12 @@ for sid in sorted(df["SensorId"].unique()):
             f"{MAX_NODES} nodes, {MAX_EDGES} edges")
         log_ram(f"Sensor {sid} Graph Limits: {MAX_NODES} nodes, {MAX_EDGES} edges")
 
-        # Build directed graph from flows
+        # build directed graph from flows
         G_full = nx.from_pandas_edgelist(
             df_s, source="SrcAddr", target="DstAddr", create_using=nx.DiGraph()
         )
 
-        # Prioritize: all C&C nodes + their neighbors
+        # prioritize: all C&C nodes + their neighbors
         cnc_neighbors = set()
         for cnc in cc_nodes:
             if cnc in G_full:
@@ -381,16 +383,17 @@ for sid in sorted(df["SensorId"].unique()):
 
         nodes_keep = set(cc_nodes) | cnc_neighbors
         if len(nodes_keep) > MAX_NODES:
-            # Sample neighbors to limit total nodes
+            
+            # sample neighbors to limit total nodes
             normal_nodes = [n for n in nodes_keep if n not in cc_nodes]
             sample_normal = np.random.choice(normal_nodes, size=min(MAX_NODES, len(normal_nodes)), replace=False)
             nodes_keep = set(cc_nodes) | set(sample_normal)
 
-        # Subgraph for plotting
+        # subgraph for plotting
         G = G_full.subgraph(nodes_keep).copy()
         del G_full
 
-        # Limit edges
+        # limit edges
         all_edges = list(G.edges())
         if len(all_edges) > MAX_EDGES:
             np.random.seed(RANDOM_STATE)
