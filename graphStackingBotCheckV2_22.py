@@ -103,60 +103,113 @@ log_ram("After Optimize+Label")
 
 print(f"[Info] Loaded {len(df):,} flows across {df['SensorId'].nunique()} sensors")
 
+# delete row contains NaN
 df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", "TotPkts", "Label"]).copy()
 log_ram("After DropNA")
 
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
+# if Dir missing, usually considered “forward flow” or standard direction >>> set as ->
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
+# map Dir to number
 df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
 
+# set Proto & State as number, ML (Tree Based Model) can't process text, only numbers
 for c in ["Proto", "State"]:
     df[c] = LabelEncoder().fit_transform(df[c].astype(str))
 
-df["ByteRatio"]      = df["TotBytes"] / (df["TotPkts"] + 1)
+# creating new features from the original features so that the machine learning model can detect botnets with higher accuracy
+df["ByteRatio"] = df["TotBytes"] / (df["TotPkts"] + 1) # byte per packet, botnet had samll packet
+
+# packet per second
+# Botnet behavior:
+# DDoS > very high rate
+# Beaconing > short burst, low rate
+# Scanning > fast packets but short duration
 df["DurationRate"]   = df["TotPkts"]  / (df["Dur"] + 0.1)
+
+# How many bytes come from source
+# Bot (client) > usually more outbound traffic
+# C&C server > usually more inbound traffic
+# Normal host > relatively balanced
 df["FlowIntensity"]  = df["SrcBytes"] / (df["TotBytes"] + 1)
+
+# Get ratio
+# Some botnets:
+# Send many small packets > high ratio
+# Send few large packets > low ratio
 df["PktByteRatio"]   = df["TotPkts"]  / (df["TotBytes"] + 1)
+
+# Get how dominant traffic is from the source
+# Bots > typically send outbound traffic > high ratio
+# DDoS victims > small srcBytes > low ratio
 df["SrcByteRatio"]   = df["SrcBytes"] / (df["TotBytes"] + 1)
+
+# Type of Service / Quality of Service > packet prio
+# Botnet traffic often does not follow normal priorities (ToS & QoS mismatch)
+# Normal traffic is usually symmetrical/homogeneous
 df["TrafficBalance"] = (df["sTos"] - df["dTos"]).abs()
+
+# Bot scanning/automated traffic > very short duration per packet
+# Normal human users > higher average
 df["DurationPerPkt"] = df["Dur"] / (df["TotPkts"] + 1)
-df["Intensity"]      = df["TotBytes"] / (df["Dur"] + 1)
+
+# Byte/second
+# DDoS UDP/TCP flood > very high intensity
+# Small beaconing > low intensity
+df["Intensity"] = df["TotBytes"] / (df["Dur"] + 1)
 log_ram("After Feature Eng")
 
+# select field in df
 features = [
     "Dir", "Dur", "Proto", "TotBytes", "TotPkts", "sTos", "dTos", "SrcBytes",
     "ByteRatio", "DurationRate", "FlowIntensity", "PktByteRatio",
     "SrcByteRatio", "TrafficBalance", "DurationPerPkt", "Intensity"
 ]
 
-# ---------------- split & scale -----------------
+# replace positif infiiny & negative infinity with NaN, an replace NaN to 0
 X_full = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
-y_full = df["Label"].astype(int)
+y_full = df["Label"].astype(int) #if not int, cause error
 log_ram("After Feature Select")
 
+# reduce if df to big, 16gb memory bro!
 if len(df) > MAX_ROWS_FOR_STACKING:
     print(f"[Sample] Dataset too large ({len(df):,}), using {MAX_ROWS_FOR_STACKING:,} for model training...")
+    # get random sampling, dataset to big!
     df_sample = df.sample(n=MAX_ROWS_FOR_STACKING, random_state=RANDOM_STATE)
+
+    # replace positif infiiny & negative infinity with NaN, an replace NaN to 0
     X = df_sample[features].replace([np.inf, -np.inf], np.nan).fillna(0)
-    y = df_sample["Label"].astype(int)
+    y = df_sample["Label"].astype(int) #if not int, cause error
 else:
     X, y = X_full, y_full
 log_ram("After Sampling")
 
+# X_train > training features
+# X_test > testing features
+# y_train > training labels
+# y_test > testing labels
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.30, stratify=y, random_state=RANDOM_STATE
 )
 log_ram("After Train/Test Split")
 
+# Logistic Regression is a linear model that is sensitive to the scale of features > use StandardScaler
 scaler = StandardScaler()
+# normalize scale train features
 X_train_scaled = scaler.fit_transform(X_train)
+
+# normalize scale test feature
+# dont fit it, fit = learn from data
 X_test_scaled  = scaler.transform(X_test)
 log_ram("After Scaling")
 
-# ------------------ training: stacking --------------
+# train
 trained_model = None
 print("\n[Train] Starting model training (Stacking, passthrough=False)...")
 
+# RandomForest > stable, robust against noise, good for generalization
+# ExtraTrees > more random, faster, and increases diversity
+# HistGradientBoosting > very powerful for small/subtle patterns, suitable for large datasets
 with threadpool_limits(limits=1):
     try:
         base_learners = [
@@ -174,6 +227,7 @@ with threadpool_limits(limits=1):
             )),
         ]
 
+        # Logistic Regression meta-model for combining probabilities from multiple modes
         meta = LogisticRegression(solver="lbfgs", max_iter=1000)
         stack = StackingClassifier(
             estimators=base_learners,
@@ -185,6 +239,9 @@ with threadpool_limits(limits=1):
             verbose=1
         )
 
+        # RF_prob  ─┐
+        # ET_prob  ─┼──➤ Logistic Regression ➤ Final Prediction
+        # HGB_prob ─┘
         stack.fit(X_train_scaled, y_train)
         trained_model = stack
         print("[Train] Stacking model trained successfully.")
@@ -200,10 +257,20 @@ with threadpool_limits(limits=1):
         print("[Fallback] RandomForest model trained.")
         log_ram("After Fallback RF")
 
-# ------------------ evaluation ------------------
+# evaluation--
+
+# probability predictions
 p_test = trained_model.predict_proba(X_test_scaled)[:, 1]
+
+# calculate the ROC curve
 fpr, tpr, thr_roc = roc_curve(y_test, p_test)
+
+# find the best threshold
 best_threshold = thr_roc[np.argmax(np.sqrt(tpr * (1 - fpr)))]
+# because the default threshold = 0.5 is not suitable for unbalanced datasets
+# if using a threshold of 0.5, the model may allow botnets to pass through or trigger too many false alerts > mostly blue
+
+# changes the probability of the model result to a 0/1 label based on the best threshold
 y_pred_test = (p_test >= best_threshold).astype(int)
 log_ram("After Eval")
 
@@ -215,7 +282,7 @@ print("Recall:",    recall_score(y_test, y_pred_test))
 print("F1:",        f1_score(y_test, y_pred_test))
 print("ROC-AUC:",   roc_auc_score(y_test, p_test))
 
-# ------------------ full inference ------------------
+# full inference
 X_all_scaled = scaler.transform(X_full)
 df["PredictedProb"] = trained_model.predict_proba(X_all_scaled)[:, 1]
 df["PredictedLabel"] = (df["PredictedProb"] >= best_threshold).astype(int)
@@ -223,7 +290,7 @@ del X_all_scaled, X_full, y_full
 gc.collect()
 log_ram("After Full Inference")
 
-# ------------------ per-sensor C&C detection ------------------
+# per-sensor C&C detection
 detected_summary = []
 for sid in sorted(df["SensorId"].unique()):
     print(f"\n=== [Sensor {sid}] Auto C&C Detection")
@@ -237,10 +304,10 @@ for sid in sorted(df["SensorId"].unique()):
                   .rename(columns={"count": "out_ct", "mean": "out_prob"})
     stats = agg_in.join(agg_out, how="outer").fillna(0)
 
-    stats["in_ratio"]  = stats["in_ct"]  / (stats["in_ct"] + stats["out_ct"] + 1e-9)
+    stats["in_ratio"] = stats["in_ct"]  / (stats["in_ct"] + stats["out_ct"] + 1e-9)
     stats["out_ratio"] = stats["out_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9)
-    stats["avg_prob"]  = (stats["in_prob"] + stats["out_prob"]) / 2
-    stats["degree"]    = stats["in_ct"] + stats["out_ct"]
+    stats["avg_prob"] = (stats["in_prob"] + stats["out_prob"]) / 2
+    stats["degree"] = stats["in_ct"] + stats["out_ct"]
 
     node_roles = {}
     for n, r in stats.iterrows():

@@ -38,20 +38,8 @@ def fast_label_to_binary(df):
         re.IGNORECASE,
     )
 
+    # set as result = [key, value]
     result = pd.Series(np.nan, index=df.index)
-
-    # regex checks
-    # result[df["Label"].astype(str).apply(lambda x: bool(bot_pattern.search(x)))] = 1
-    # result[df["Label"].astype(str).apply(lambda x: bool(normal_pattern.search(x)))] = 0
-
-    # def classify_label(label):
-    #     text = str(label)
-    #     if bot_pattern.search(text):
-    #         return 1
-    #     elif normal_pattern.search(text):
-    #         return 0
-    #     else:
-    #         return np.nan
         
     def classify_label(label):
         text = str(label)
@@ -59,10 +47,9 @@ def fast_label_to_binary(df):
             return 1
         else:
             return 0
-            return np.nan
     result = df["Label"].apply(classify_label)
 
-    # numeric fallback
+    # numeric fallback, only takes numeric data
     numeric = pd.to_numeric(df["Label"], errors="coerce")
     result.loc[numeric.notna()] = (numeric.loc[numeric.notna()] >= 0.5).astype(int)
 
