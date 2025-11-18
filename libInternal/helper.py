@@ -43,17 +43,4 @@ def setExportDataLocation():
 
     return fileDataTimeStamp, output_datadir
 
-def cleanYear(val):
-    if pd.isna(val):
-        return None
-    val = str(val)
-    if "/" in val:
-        return int(val.split("/")[1])
-    return int(val)
-
-def approx_mem_mb(df: pd.DataFrame) -> float:
-    try:
-        return df.memory_usage(deep=True).sum() / 1024**2
-    except Exception:
-        return float('nan')
 
