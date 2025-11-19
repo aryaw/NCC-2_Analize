@@ -42,6 +42,7 @@ from libInternal import (
     setExportDataLocation,
     optimize_dataframe,
     fast_label_to_binary,
+    detect_cnc_from_label
 )
 
 RANDOM_STATE = 42
