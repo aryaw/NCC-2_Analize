@@ -64,4 +64,22 @@ def fast_label_to_binary(df):
     print("[Label] value counts:\n", df["Label"].value_counts())
     return df
 
+def detect_cnc_from_label(df):
+    """
+    Detect potential C&C
+    - From-Botnet
+    - To-Botnet
+    - Botnet
+    """
+    labels = df["Label"].astype(str).str.lower()
 
+    df["LabelFromBotnet"] = labels.str.contains(r"from[-_]?botnet", regex=True)
+    df["LabelToBotnet"]   = labels.str.contains(r"to[-_]?botnet", regex=True)
+    df["LabelBotnet"]     = labels.str.contains(r"botnet", regex=True)
+
+    df["LabelCNC"] = 0
+    df.loc[df["LabelToBotnet"], "LabelCNC"] = 1
+
+    print("[LabelCNC] Summary:")
+    print(df["LabelCNC"].value_counts())
+    return df

@@ -45,7 +45,7 @@ from libInternal import (
 )
 
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 8_000_000
+MAX_ROWS_FOR_STACKING = 8_500_000
 SAFE_THREADS = "1"
 os.environ.update({
     "OMP_NUM_THREADS": SAFE_THREADS,
@@ -87,12 +87,15 @@ SELECT SrcAddr, DstAddr, Proto, Dir, State, Dur, TotBytes, TotPkts,
        sTos, dTos, SrcBytes, Label, SensorId
 FROM read_csv_auto('{csv_path}', sample_size=-1)
 WHERE Label IS NOT NULL
+    AND REGEXP_MATCHES(SrcAddr, '^[0-9.]+$')
 """
 
 print("[Load] Reading dataset...")
 df = con.sql(query).df()
 log_ram("After Load CSV")
 
+
+df = detect_cnc_from_label(df)  
 df = optimize_dataframe(df)
 df = fast_label_to_binary(df)
 df = df.dropna(subset=[
@@ -131,6 +134,7 @@ if len(df) > MAX_ROWS_FOR_STACKING:
     df_sample = df.sample(n=MAX_ROWS_FOR_STACKING, random_state=RANDOM_STATE)
     X = df_sample[features].replace([np.inf, -np.inf], np.nan).fillna(0)
     y = df_sample["Label"].astype(int)
+    print(f"[Data] Data too big, {MAX_ROWS_FOR_STACKING} used")
 else:
     X, y = X_full, y_full
 
@@ -234,7 +238,7 @@ for sid in sorted(df["SensorId"].unique()):
     node_roles = {}
     for n, r in stats.iterrows():
         # if (r["avg_prob"] > 0.70) and (r["degree"] > 110) and (r["out_ratio"] > 0.70):
-        if (r["avg_prob"] > 0.70) and (r["out_ct"] > 200) and (r["out_ratio"] > 0.70):
+        if (r["avg_prob"] > 0.70) and (r["out_ct"] > 120) and (r["out_ratio"] > 0.55):
             node_roles[n] = "C&C"
         else:
             node_roles[n] = "Normal"
