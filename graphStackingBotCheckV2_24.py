@@ -43,7 +43,7 @@ from libInternal import (
 
 
 RANDOM_STATE = 42
-MAX_ROWS_FOR_STACKING = 8_500_000
+MAX_ROWS_FOR_STACKING = 12_500_000
 SAFE_THREADS = "1"
 
 os.environ.update({
@@ -192,7 +192,6 @@ with threadpool_limits(limits=1):
         ).fit(X_train_scaled, y_train)
 log_ram("After Model Train")
 
-
 p_test = model.predict_proba(X_test_scaled)[:, 1]
 fpr, tpr, thr = roc_curve(y_test, p_test)
 best_threshold = thr[np.argmax(np.sqrt(tpr * (1 - fpr)))]
@@ -217,7 +216,7 @@ for sid in sorted(df["SensorId"].unique()):
     print(f"\n=== Sensor {sid} ===")
     df_s = df[df["SensorId"] == sid].copy()
 
-    # Aggregate inbound/outbound
+    # Aggregate inbound/outbound (counts and mean predicted prob)
     agg_in  = df_s.groupby("DstAddr")["PredictedProb"].agg(["count","mean"])
     agg_out = df_s.groupby("SrcAddr")["PredictedProb"].agg(["count","mean"])
 
@@ -225,47 +224,125 @@ for sid in sorted(df["SensorId"].unique()):
     agg_out.columns = ["out_ct","out_prob"]
 
     stats = agg_in.join(agg_out, how="outer").fillna(0)
+
+    out_unique = df_s.groupby("SrcAddr")["DstAddr"].nunique().rename("out_unique_dests")
+    in_unique  = df_s.groupby("DstAddr")["SrcAddr"].nunique().rename("in_unique_srcs")
+    stats = stats.join(out_unique, how="left").join(in_unique, how="left").fillna(0)
+
     stats["degree"] = stats["in_ct"] + stats["out_ct"]
     stats["in_ratio"]  = stats["in_ct"]  / (stats["degree"] + 1e-9)
     stats["out_ratio"] = stats["out_ct"] / (stats["degree"] + 1e-9)
-    stats["avg_prob"]  = (stats["in_prob"] + stats["out_prob"]) / 2
+    # stats["avg_prob"]  = (stats["in_prob"] + stats["out_prob"]) / 
+    
+    mal_out = stats["out_prob"].mean()
+    mal_in  = stats["in_prob"].mean()
+    dominance = mal_out / (mal_out + mal_in + 1e-9)
 
-    # Existing C&C Logic (untouched)
-    node_roles = {}
+    # auto weights
+    w_out = 0.5 + 0.5 * dominance
+    w_in  = 1.0 - w_out
+    print(f"[Sensor {sid}] Auto C&C Weights: w_out={w_out:.3f}, w_in={w_in:.3f}")
+
+    stats["cnc_prob"] = (stats["out_prob"] * w_out) + (stats["in_prob"] * w_in)
+
+    # stats["cnc_score"] = stats["avg_prob"] * (
+    #     1 + stats["out_ratio"] * 1.8 + stats["in_ratio"] * 0.8
+    # ) * np.log1p(stats["degree"]) * np.log1p(stats["out_unique_dests"] + 1)
+
+    stats["cnc_score"] = stats["cnc_prob"] * (
+        1 + stats["out_ratio"] * 1.8 + stats["in_ratio"] * 0.8
+    ) * np.log1p(stats["degree"]) * np.log1p(stats["out_unique_dests"] + 1)
+
+
+    # top 5 candidates (sorted by cnc_score)
+    top5_any = stats.sort_values("cnc_score", ascending=False).head(5)
+    print(f"\n[Sensor {sid}] Top 5 C&C Candidates (regardless of threshold):")
+    for idx, row in top5_any.iterrows():
+        # print(
+        #     f"  - {idx} | score={row['cnc_score']:.4f} | "
+        #     f"avg_prob={row['avg_prob']:.3f} | "
+        #     f"out_ct={int(row['out_ct'])} | out_ratio={row['out_ratio']:.2f}"
+        # )
+
+        print(
+            f"  - {idx} | score={row['cnc_score']:.4f} | "
+            f"cnc_prob={row['cnc_prob']:.3f} | "
+            f"out_ct={int(row['out_ct'])} | out_ratio={row['out_ratio']:.2f}"
+        )
+
+    auto_strict_thr = stats["cnc_prob"].mean() + 1.5 * stats["cnc_prob"].std()
+    auto_strict_thr = min(auto_strict_thr, 0.95)
+    auto_strict_thr = max(auto_strict_thr, 0.40)
+
+    print(f"[Sensor {sid}] Auto strict CNC threshold = {auto_strict_thr:.3f}")
+
+    strict_nodes = set()
     for n, r in stats.iterrows():
-        if (r["avg_prob"] > 0.70) and (r["out_ct"] > 120) and (r["out_ratio"] > 0.55):
-            node_roles[n] = "C&C"
-        else:
-            node_roles[n] = "Normal"
+        # if (r["avg_prob"] > 0.70) and (r["out_ct"] > 120) and (r["out_ratio"] > 0.55):
+        # if (r["cnc_prob"] > 0.70) and (r["out_ct"] > 120) and (r["out_ratio"] > 0.70):
+        if (r["cnc_prob"] > auto_strict_thr) and (r["out_ct"] > 120) and (r["out_ratio"] > 0.70):
+            strict_nodes.add(n)
 
-    # cc_nodes = [n for n, role in node_roles.items() if role == "C&C"]
-    # stats["Role"] = stats.index.map(lambda x: node_roles[x])
+    percentile_cut = 95
+    cutoff_score = max(0.0, np.percentile(stats["cnc_score"].values, percentile_cut))
+   
+    # min_avg_prob = 0.40
+    min_cnc_prob = 0.40
+    min_out_ct = 20
+
+    percentile_nodes = set(stats[
+        (stats["cnc_score"] >= cutoff_score) &
+        # (stats["avg_prob"] >= min_avg_prob) &
+        (stats["cnc_prob"] >= min_cnc_prob) &
+        (stats["out_ct"] >= min_out_ct)
+    ].index.tolist())
 
     real_cnc_nodes = df_s[df_s["LabelCNC"] == 1]["DstAddr"].unique().tolist()
-    cc_nodes = sorted(set([
-        *[n for n, role in node_roles.items() if role == "C&C"], 
-        *real_cnc_nodes
-    ]))
+    real_cnc_set = set(real_cnc_nodes)
+
+    cc_nodes = sorted(set().union(strict_nodes, percentile_nodes, real_cnc_set))
+
+    reasons = {}
+    for n in cc_nodes:
+        r = stats.loc[n]
+        reason_parts = []
+        if n in strict_nodes:
+            reason_parts.append("strict_rule")
+        if n in percentile_nodes:
+            reason_parts.append(f"score>=p{percentile_cut} (>= {cutoff_score:.4f})")
+        if n in real_cnc_set:
+            reason_parts.append("label_cnc")
+        # add highlight details
+        if r["out_ratio"] > 0.8:
+            reason_parts.append("high_out_ratio")
+        if r["out_ct"] > 200:
+            reason_parts.append("very_high_out_ct")
+        reasons[n] = ";".join(reason_parts) if reason_parts else "candidate"
+
     stats["Role"] = stats.index.map(lambda x: "C&C" if x in cc_nodes else "Normal")
+    stats["Reason"] = stats.index.map(lambda x: reasons.get(x, ""))
 
-    cnc_path   = os.path.join(outputdata_dir, f"Sensor{sid}_CNC_Detected_{fileDataTimeStamp}.csv")
-    normal_path= os.path.join(outputdata_dir, f"Sensor{sid}_NormalNodes_{fileDataTimeStamp}.csv")
+    candidates_path = os.path.join(outputdata_dir, f"Sensor{sid}_CNC_Candidates_{fileDataTimeStamp}.csv")
+    stats.sort_values("cnc_score", ascending=False).to_csv(candidates_path)
+    print(f"[Export] Sensor {sid} candidates exported -> {candidates_path}")
 
-    stats[stats["Role"] == "C&C"].to_csv(cnc_path)
-    stats[stats["Role"] == "Normal"].to_csv(normal_path)
-    print(f"[Export] Sensor {sid} C&C + Normal exported")
-
-    # C&C Score (existing)
     if len(cc_nodes) > 0:
         cnc_df = stats.loc[cc_nodes].copy()
         cnc_df["SensorId"] = sid
-        cnc_df["cnc_score"] = cnc_df["avg_prob"] * \
-                              (1 + cnc_df["in_ratio"] + cnc_df["out_ratio"]) * \
-                              np.log1p(cnc_df["degree"])
         detected_summary.append(cnc_df)
         log_ram(f"Sensor {sid} After C&C Score")
+        print(f"[Detect] Sensor {sid} flagged {len(cc_nodes)} nodes (strict={len(strict_nodes)}, percentile={len(percentile_nodes)}, ground_truth={len(real_cnc_set)})")
+        
+        # show top 5 flagged nodes for quick debug
+        top5 = cnc_df.sort_values("cnc_score", ascending=False).head(5)
+        for idx, row in top5.iterrows():
+            # print(f"  - {idx} score={row['cnc_score']:.4f} avg_prob={row['avg_prob']:.3f} out_ct={int(row['out_ct'])} out_ratio={row['out_ratio']:.2f} reason={row['Reason']}")
+            print(
+                f"  - {idx} score={row['cnc_score']:.4f} cnc_prob={row['cnc_prob']:.3f} "
+                f"out_ct={int(row['out_ct'])} out_ratio={row['out_ratio']:.2f} reason={row['Reason']}"
+            )
 
-        # Graph Generation (existing)
+        # Graph Generation (safe sampling & preserve node set)
         print("[Plot] Generating 3D interactive network graph")
 
         available_gb = psutil.virtual_memory().available / (1024 ** 3)
@@ -278,8 +355,10 @@ for sid in sorted(df["SensorId"].unique()):
 
         log_ram(f"Sensor {sid} Graph Limits: {MAX_NODES} nodes, {MAX_EDGES} edges")
 
+        # Build directed graph
         G_full = nx.from_pandas_edgelist(df_s, "SrcAddr", "DstAddr", create_using=nx.DiGraph())
 
+        # Determine neighbor expansion: include predecessors and successors up to 1-hop
         cnc_neighbors = set()
         for cnc in cc_nodes:
             if cnc in G_full:
@@ -287,24 +366,44 @@ for sid in sorted(df["SensorId"].unique()):
                 cnc_neighbors.update(G_full.successors(cnc))
 
         nodes_keep = set(cc_nodes) | cnc_neighbors
+
         if len(nodes_keep) > MAX_NODES:
             normal_nodes = [n for n in nodes_keep if n not in cc_nodes]
-            sample_normal = np.random.choice(normal_nodes, size=min(MAX_NODES, len(normal_nodes)), replace=False)
-            nodes_keep = set(cc_nodes) | set(sample_normal)
+            
+            # score sampling by degree so we keep influential nodes
+            normal_nodes_scores = [(n, G_full.degree(n)) for n in normal_nodes]
+            normal_nodes_scores.sort(key=lambda x: x[1], reverse=True)
+            keep_normals = [n for n, _ in normal_nodes_scores[: max(0, MAX_NODES - len(cc_nodes))]]
+            nodes_keep = set(cc_nodes) | set(keep_normals)
 
+        # Subgraph and preserve original graph connectivity among chosen nodes
         G = G_full.subgraph(nodes_keep).copy()
         del G_full
 
+        # If edges exceed limit, prune lowest-weight edges (if you had weights) or random sample preserving nodes
         all_edges = list(G.edges())
         if len(all_edges) > MAX_EDGES:
-            edges_sample = np.random.choice(len(all_edges), size=MAX_EDGES, replace=False)
-            edges_keep = [all_edges[i] for i in edges_sample]
-            G = nx.DiGraph(edges_keep)
+            # prefer edges adjacent to cc_nodes
+            prioritized_edges = [e for e in all_edges if (e[0] in cc_nodes or e[1] in cc_nodes)]
+            remaining = [e for e in all_edges if e not in prioritized_edges]
+            keep_edges = []
+            
+            # keep all prioritized up to MAX_EDGES, then sample remaining
+            keep_edges.extend(prioritized_edges)
+            if len(keep_edges) < MAX_EDGES:
+                needed = MAX_EDGES - len(keep_edges)
+                sampled = list(np.random.choice(len(remaining), size=needed, replace=False))
+                keep_edges.extend([remaining[i] for i in sampled])
+            
+            # build new DiGraph with original nodes (so isolated nodes remain visible)
+            G = nx.DiGraph()
+            G.add_nodes_from(nodes_keep)
+            G.add_edges_from(keep_edges)
 
         print(f"[Plot] Drawing {len(G.nodes())} nodes and {len(G.edges())} edges")
 
         node_color = ["red" if n in cc_nodes else "blue" for n in G.nodes()]
-        node_size  = [10   if n in cc_nodes else 4     for n in G.nodes()]
+        node_size  = [12   if n in cc_nodes else 5     for n in G.nodes()]
 
         pos = nx.spring_layout(G, dim=3, seed=RANDOM_STATE, iterations=60)
 
@@ -364,6 +463,7 @@ for sid in sorted(df["SensorId"].unique()):
 
     gc.collect()
     log_ram(f"Sensor {sid} End (Post-GC)")
+
 
 print("\nDone. All CSV exported successfully.")
 log_ram("Script End")
