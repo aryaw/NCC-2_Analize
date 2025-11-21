@@ -1,7 +1,6 @@
 
 # NCC‑2 Botnet Flow Analysis  
 ## **Stacking Ensemble + Directed Graph-Based C&C Detection**  
-### *(Very Detailed GitHub-Optimized Research + Development README)*
 
 ---
 
@@ -64,7 +63,7 @@ Unlike CTU‑13 (sporadic) or NCC (periodic), NCC‑2 includes:
 
 ---
 
-# 📑 Citation
+# Citation
 
 If you use this repository or analysis pipeline, please cite:
 
