@@ -1,175 +1,275 @@
-# 🕵️‍♂️ NCC2 Botnet Flow Analysis
 
-This project provides a complete workflow for **processing, cleaning, and analyzing botnet network flow data** from the **NCC2 dataset** (derived from CTU-13).  
-It includes scripts to convert raw NetFlow data, clean it, extract schemas, and visualize botnet activity.
+# NCC‑2 Botnet Flow Analysis  
+## **Stacking Ensemble + Directed Graph-Based C&C Detection**  
+### *(Very Detailed GitHub-Optimized Research + Development README)*
 
 ---
 
-## 📁 Project Structure
+# Overview
+
+This repository provides a complete **research-grade + developer-ready pipeline** for analyzing the  
+**NCC‑2 Simultaneous Botnet Dataset**, detecting:
+
+- **Botnet activity**
+- **Command-and-Control (C&C) nodes**
+- **Network graph propagation behavior**
+- **Cross-sensor coordinated attacks**
+
+The system combines:
+
+### **Machine Learning (Stacking Ensemble)**  
+- Random Forest  
+- Extra Trees  
+- Histogram Gradient Boosting  
+- Logistic Regression meta-learner  
+- Auto probability thresholding  
+- Per-sensor recalculated C&C weights  
+
+### **Directed Graph Analytics**  
+- Node-level inbound/outbound aggregation  
+- Auto CNC probability weighting  
+- CNC scoring (degree × uniqueness × directionality × ML probability)  
+- 3D interactive network graph visualization  
+- Node role classification  
+
+---
+
+# Dataset Description - NCC‑2 Dataset
+
+### **NCC‑2 Dataset: Simultaneous Botnet Dataset**  
+**Published:** 8 September 2022  
+**DOI:** 10.17632/8dpt85jrhp.2  
+**Format:** Bidirectional network flows (binetflow)  
+**Features:** 18 core NetFlow-like attributes  
+**Key Property:** *Simultaneous multi-botnet attacks*
+
+The dataset integrates:
+
+- **CTU‑13 botnet scenarios**  
+- **NCC periodic botnet activity**  
+
+and merges them to simulate **high‑intensity parallel botnet activity**, where:
+
+- multiple botnets execute attack phases *at the same time*
+- several sensors detect similar behaviors across the same timestamp window  
+- C&C traffic overlaps, creating realistic multi-source attack waves
+
+### **Why Simultaneous Attacks Matter**
+Unlike CTU‑13 (sporadic) or NCC (periodic), NCC‑2 includes:
+
+- High-volume burst attacks  
+- Parallel coordinated botnet operations  
+- More challenging detection difficulty  
+- Real-world approximation of DDoS command infrastructure
+
+---
+
+# 📑 Citation
+
+If you use this repository or analysis pipeline, please cite:
 
 ```
-project-root/
-│
+@dataset{ncc2_2022,
+  title={NCC-2 Dataset: Simultaneous Botnet Dataset},
+  author={Azmi, Mohd Nizam and others},
+  year={2022},
+  doi={10.17632/8dpt85jrhp.2},
+  publisher={Mendeley Data},
+  version={2}
+}
+```
+
+And dataset sources:
+
+```
+[1] CTU-13 Dataset - Czech Technical University.
+[2] NCC Dataset - National Cybersecurity Centre.
+[3] NCC-2 Dataset construction methodology.
+```
+
+---
+
+# 📁 Repository Structure
+
+```
+Repo/
 ├── assets/
 │   ├── dataset/
-│   │   └── NCC2AllSensors_clean.csv   # Cleaned CSV dataset (output of cleanUpCSV.py)
-│   ├── outputs/                       # Generated graphs, schema tables, etc.
+│   │   └── NCC2AllSensors_clean.csv
+│   ├── outputs/
+│   ├── outputsData/
+│   └── present/
 │
-├── convertCSV.py                      # Convert raw NetFlow to structured CSV
-├── cleanUpCSV.py                      # Remove duplicate headers & invalid rows
-├── getSchema.py                       # Extract schema summary to DataTable HTML
-├── graphBotnetC2.py                   # Detect & visualize C&C bots by SensorId
-├── requirements.txt                   # Python dependencies
-├── libInternal.py                     # Common helper utilities (file location, DB connection, etc.)
+├── graphStackingBotCheckV2_25.py     # Main analysis engine
+├── cleanUpCSV.py                     # Clean raw flows
+├── convertCSV.py                     # Convert binetflow to CSV
+├── getSchema.py                      # Generate schema HTML
+├── libInternal/                      # Helper utilities
+│
+├── main.py                           # Local viewer for generated HTML
+├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## ⚙️ Setup Instructions
+# System Architecture
 
-### 1. Clone this repository
+## **1. Preprocessing**
+- Load dataset with DuckDB
+- Convert labels → binary bot vs normal (`fast_label_to_binary`)
+- Add `LabelCNC` from ground truth (`detect_cnc_from_label`)
+- Generate engineered network features:
+  - byte ratios
+  - packet/byte density
+  - duration‑normalized features
+  - traffic direction encodings
+  - intensity scoring
 
-```bash
-git clone https://github.com/aryaw/NCC-2_Analize.git
-cd NCC-2_Analize
+---
+
+# Machine Learning - Stacking Ensemble
+
+### **Model Structure**
+- **Base models:**
+  - `RandomForestClassifier`
+  - `ExtraTreesClassifier`
+  - `HistGradientBoostingClassifier`
+- **Meta learner:**
+  - Logistic Regression (`predict_proba` stack method)
+
+### **Features Used**
+16 network-traffic engineered features:
+- Direction (`->`, `<-`, `<->`)
+- Duration
+- Protocol (encoded)
+- Total packets / bytes
+- ToS differences
+- Byte ratios
+- Flow intensity
+- Duration per packet
+- Traffic balance
+- Packet-byte ratio
+
+### **Adaptive Threshold**
+A global threshold is computed via:
+
+```
+argmax sqrt(TPR × (1 − FPR))
 ```
 
-### 2. Create and activate a virtual environment
+This gives a **balanced global detector**, preventing false positives.
 
-```bash
-python3 -m venv venv
-source venv/bin/activate     # On Linux / macOS
-# OR
-venv\Scripts\activate      # On Windows
+---
+
+# Directed Graph-Based C&C Detection
+
+For each SensorId:
+
+## **1. Aggregation per node**
+For each IP node:
+
+```
+in_ct,  in_prob   = groupby(DstAddr)
+out_ct, out_prob  = groupby(SrcAddr)
+unique peers       = {distinct inbound/outbound nodes}
 ```
 
-### 3. Install dependencies
+## **2. Auto CNC Probability Weighting**
+Instead of fixed 0.7/0.3, weight is auto‑calculated:
+
+```
+dominance = mean(out_prob) / (mean(out_prob)+mean(in_prob))
+w_out = 0.5 + 0.5 * dominance
+w_in  = 1 - w_out
+```
+
+This adapts to sensors with heavy outbound botnet traffic.
+
+## **3. CNC Probability**
+```
+cnc_prob = out_prob*w_out + in_prob*w_in
+```
+
+## **4. CNC Score**
+Combines graph + ML signals:
+
+```
+cnc_score =
+   cnc_prob *
+   (1 + out_ratio*1.8 + in_ratio*0.8) *
+   log1p(degree) *
+   log1p(out_unique_dests + 1)
+```
+
+## **5. Strict Rule Auto Threshold**
+```
+auto_strict_thr = mean(cnc_prob) + 1.5*std
+bounded between [0.40, 0.95]
+```
+
+## **6. Percentile Rule**
+Nodes with CNC Score ≥ 95th percentile are candidates.
+
+## **7. Role Classification**
+Labels node as:
+- **C&C**
+- **Normal**
+
+## **8. Export to CSV per sensor**
+- Full stats  
+- CNC probability  
+- CNC score  
+- Role  
+- Reason tags  
+
+---
+
+# 3D Graph Visualization
+
+For each sensor, a 3D graph is generated:
+
+- Red nodes → C&C
+- Blue nodes → sampled normal nodes
+- Directed edges drawn without overloading the graph
+- Limits auto-adjust to available RAM
+- Interactive Plotly HTML exported
+
+---
+
+# Running the Pipeline
+
+### **Run full C&C detection + ML + graph generation**
+```bash
+python graphStackingBotCheckV2_25.py
+```
+
+### **Run local HTML viewer**
+```bash
+python main.py
+```
+
+---
+
+# Requirements
+
+Install:
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+This includes:
 
-## 🧩 Workflow Overview
-
-### 1. **Convert raw NetFlow to CSV**
-Script: `convertCSV.py`
-
-This script reads the raw botnet flow logs (e.g., `.binetflow`, `.txt`, or `.log`) and converts them into a structured **CSV format**.
-
-```bash
-python convertCSV.py
-```
-
-**Output:**
-```
-assets/dataset/NCC2AllSensors.csv
-```
+- DuckDB
+- Scikit-learn
+- NetworkX
+- Plotly
+- Pandas, NumPy
+- psutil
 
 ---
 
-### 2. **Clean the CSV (remove duplicate headers & invalid rows)**
-Script: `cleanUpCSV.py`
-
-Removes repeated header rows (common in large merged datasets) and ensures all columns align correctly.
-
-```bash
-python cleanUpCSV.py
-```
-
-**Output:**
-```
-assets/dataset/NCC2AllSensors_clean.csv
-```
-
----
-
-### 3. **Extract and visualize data schema**
-Script: `getSchema.py`
-
-Loads the cleaned CSV into **DuckDB**, extracts all column names and inferred types, and displays them in an interactive **DataTables** HTML report.
-
-```bash
-python getSchema.py
-```
-
-**Output:**
-```
-assets/outputs/NCC2Schema_<timestamp>.html
-```
-
----
-
-## 🌐 Preview All Exported Reports in a Web Viewer
-
-Script: `main.py`
-
-You can preview all exported HTML files (from `getSchema.py`, `graphBotnetC2.py`, etc.) using a built-in Flask dashboard.
-
-### Run the Viewer
-```bash
-python main.py
-```
-
-### Open in Browser
-```
-http://127.0.0.1:5000/
-```
-
-### Features
-- Sidebar automatically lists all `.html` files in `assets/outputs/`  
-- Click any file to preview it instantly in the right panel  
-- Auto-refreshes every 8 seconds to detect new exports  
-- Clean white/blue-black UI for clarity and consistency  
-
----
-
-## 🧠 Example Dataset Columns (NCC2 / CTU-13 Format)
-
-| Column | Description |
-|--------|--------------|
-| `StartTime` | Flow start timestamp |
-| `Dur` | Flow duration (seconds) |
-| `Proto` | Protocol (TCP/UDP/ICMP) |
-| `SrcAddr` | Source IP address |
-| `Sport` | Source port |
-| `Dir` | Direction of traffic (`->` or `<-`) |
-| `DstAddr` | Destination IP address |
-| `Dport` | Destination port |
-| `State` | TCP state (e.g., `S_RA`, `SYN_SENT`) |
-| `TotPkts` | Total packet count |
-| `TotBytes` | Total byte count |
-| `Label` | Flow label (botnet or normal) |
-| `activityLabel` | Activity phase or encoded label |
-| `bonetName` | Botnet family name (e.g., Neris, Rbot, Virut) |
-| `sensorId` | ID of the sensor capturing this flow |
-
----
-
-## 🧱 Dependencies
-
-Listed in `requirements.txt`:
-
----
-
-## 🧰 Virtual Environment Management
-
-To **deactivate** your virtual environment:
-```bash
-deactivate
-```
-
-To **update** your dependencies:
-```bash
-pip freeze > requirements.txt
-```
-
----
-
-## 🧾 License
-
-This project is for **research and academic use only**.  
-Dataset attribution: NCC2 / CTU-13 Botnet Dataset (CTU University, Czech Republic).  
-Ensure compliance with NCC2 dataset licensing terms.
+# License
+This project is for **academic and cybersecurity research only**.  
+You must follow licensing requirements of the NCC‑2 dataset.
