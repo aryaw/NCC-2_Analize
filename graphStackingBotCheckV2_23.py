@@ -1,8 +1,3 @@
-# ================================================
-# Add: export train/test split to CSV
-# Add: export detected C&C and normal nodes to CSV
-# ================================================
-
 import os
 import gc
 import re

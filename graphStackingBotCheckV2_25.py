@@ -43,7 +43,7 @@ from libInternal import (
 
 RANDOM_STATE = 42
 # MAX_ROWS_FOR_STACKING = 10_500_000
-MAX_ROWS_FOR_STACKING = 12_500_000
+MAX_ROWS_FOR_STACKING = 13_000_000
 SAFE_THREADS = "1"
 
 os.environ.update({
@@ -433,7 +433,7 @@ for sid in sorted(df["SensorId"].unique()):
         # fallback ensure list
         top4_set = set(top4_nodes)
 
-        # --- build edge traces
+        # --- build edge traces (all grey, clean)
         edge_x, edge_y, edge_z = [], [], []
         for u, v in G.edges():
             x0, y0, z0 = pos[u]
@@ -445,30 +445,12 @@ for sid in sorted(df["SensorId"].unique()):
         edge_trace = go.Scatter3d(
             x=edge_x, y=edge_y, z=edge_z,
             mode='lines',
-            line=dict(color='gray', width=1),
+            line=dict(color="#B0B0B0", width=1.2),  # soft grey
             hoverinfo='none',
             name='edges'
         )
 
-        top4_edge_x, top4_edge_y, top4_edge_z = [], [], []
-        for u, v, d in G.edges(data=True):
-            if (u in top4_set) or (v in top4_set):
-                x0, y0, z0 = pos[u]
-                x1, y1, z1 = pos[v]
-                top4_edge_x += [x0, x1, None]
-                top4_edge_y += [y0, y1, None]
-                top4_edge_z += [z0, z1, None]
-
-        top4_edge_trace = None
-        if len(top4_edge_x) > 0:
-            top4_edge_trace = go.Scatter3d(
-                x=top4_edge_x, y=top4_edge_y, z=top4_edge_z,
-                mode='lines',
-                line=dict(color='crimson', width=4),
-                hoverinfo='none',
-                name='top4_edges'
-            )
-
+        # --- PREPARE NODE APPEARANCE
         x_nodes = [pos[n][0] for n in G.nodes()]
         y_nodes = [pos[n][1] for n in G.nodes()]
         z_nodes = [pos[n][2] for n in G.nodes()]
@@ -476,61 +458,41 @@ for sid in sorted(df["SensorId"].unique()):
         node_color = []
         node_size = []
         node_text = []
+
         for n in G.nodes():
             if n in top4_set:
-                node_color.append("orange")
-                node_size.append(18)
+                node_color.append("#FF3B3B")         # bright red
+                node_size.append(22)
+                node_text.append(n)
             elif n in cc_nodes:
-                node_color.append("red")
+                node_color.append("#D62828")         # medium red
                 node_size.append(12)
+                node_text.append("")                 # no label
             else:
-                node_color.append("blue")
-                node_size.append(5)
-            node_text.append(f"{n}")
+                node_color.append("#1F77B4")         # blue
+                node_size.append(6)
+                node_text.append("")
 
         node_trace = go.Scatter3d(
             x=x_nodes, y=y_nodes, z=z_nodes,
             mode='markers+text',
-            marker=dict(size=node_size, color=node_color, opacity=0.9),
+            marker=dict(
+                size=node_size,
+                color=node_color,
+                opacity=0.92,
+                line=dict(width=1.5, color="black")  # subtle outline for clarity
+            ),
             text=node_text,
+            textfont=dict(size=14, color="white"),
             textposition="top center",
             hoverinfo='text',
             name='nodes'
         )
 
-        top4_trace = None
-        if len(top4_nodes) > 0:
-            x_t4 = [pos[n][0] for n in top4_nodes if n in pos]
-            y_t4 = [pos[n][1] for n in top4_nodes if n in pos]
-            z_t4 = [pos[n][2] for n in top4_nodes if n in pos]
-            top4_text = []
-            for n in top4_nodes:
-                if n in stats.index:
-                    top4_text.append(f"{n} | score={stats.loc[n,'cnc_score']:.4f}")
-                else:
-                    top4_text.append(f"{n}")
-            top4_trace = go.Scatter3d(
-                x=x_t4, y=y_t4, z=z_t4,
-                mode='markers+text',
-                marker=dict(size=26, symbol='diamond', line=dict(width=2, color='black')),
-                text=top4_text,
-                textposition="middle right",
-                hoverinfo='text',
-                name='top4_nodes'
-            )
-
-        data_traces = []
-        data_traces.append(edge_trace)
-        if top4_edge_trace is not None:
-            data_traces.append(top4_edge_trace)
-        data_traces.append(node_trace)
-        if top4_trace is not None:
-            data_traces.append(top4_trace)
-
         fig = go.Figure(
-            data=data_traces,
+            data=[edge_trace, node_trace],
             layout=go.Layout(
-                title=f"Sensor {sid} – 3D Network Graph (Weighted, {len(G.nodes())} nodes)",
+                title=f"Sensor {sid} – Clean 3D Network Graph (C&C Highlighted)",
                 showlegend=False,
                 margin=dict(l=0, r=0, b=0, t=40),
                 scene=dict(
@@ -539,17 +501,19 @@ for sid in sorted(df["SensorId"].unique()):
                     zaxis=dict(showbackground=False, visible=False)
                 ),
                 annotations=[dict(
-                    text="Orange = Top-4 C&C | Red = C&C | Blue = Normal (sampled) | Thick red edges = adjacent to top-4",
+                    text="Red = C&C | Blue = Normal | Label = Top-4 C&C",
                     showarrow=False,
-                    xref="paper", yref="paper", x=0, y=-0.05
+                    xref="paper", yref="paper", x=0, y=-0.06,
+                    font=dict(size=13, color="#AAAAAA")
                 )]
             )
         )
 
-        graph_path = os.path.join(output_dir, f"Sensor{sid}_3DGraphWeighted_Top4_{fileTimeStamp}.html")
+        graph_path = os.path.join(output_dir, f"Sensor{sid}_3DGraphAgencyStyle_{fileTimeStamp}.html")
         fig.write_html(graph_path)
-        print(f"[Plot] 3D weighted network graph (top4 highlighted) saved -> {graph_path}")
-        log_ram(f"Sensor {sid} After Weighted Plot")
+        print(f"[Plot] Clean digital-agency style graph saved -> {graph_path}")
+        log_ram(f"Sensor {sid} After Clean Plot")
+
 
     else:
         print("[Info] No C&C nodes detected in this sensor.")
