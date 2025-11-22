@@ -1,3 +1,7 @@
+# ---
+# cek ombak
+# Flow-Based Command-and-Control Detection Using Ensemble Machine Learning and Network Graph Feature Analysis
+# ---
 import os
 import gc
 import re
