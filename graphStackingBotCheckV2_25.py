@@ -461,11 +461,11 @@ for sid in sorted(df["SensorId"].unique()):
 
         for n in G.nodes():
             if n in top4_set:
-                node_color.append("#FF3B3B")         # bright red
+                node_color.append("#F11F1F")         # bright red
                 node_size.append(22)
                 node_text.append(n)
             elif n in cc_nodes:
-                node_color.append("#D62828")         # medium red
+                node_color.append("#E4A41A")         # yellow
                 node_size.append(12)
                 node_text.append("")                 # no label
             else:
