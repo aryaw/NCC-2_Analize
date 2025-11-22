@@ -88,6 +88,7 @@ SELECT SrcAddr, DstAddr, Proto, Dir, State, Dur, TotBytes, TotPkts,
        sTos, dTos, SrcBytes, Label, SensorId
 FROM read_csv_auto('{csv_path}', sample_size=-1)
 WHERE Label IS NOT NULL
+    AND REGEXP_MATCHES(SrcAddr, '^[0-9.]+$')
 """
 
 print("[Load] Reading dataset...")
