@@ -49,8 +49,9 @@ def fast_label_to_binary(df):
             return 0
     result = df["Label"].apply(classify_label)
 
-    # numeric fallback, only takes numeric data
+    # convert a column to numeric, numeric fallback to NaN, only takes numeric data
     numeric = pd.to_numeric(df["Label"], errors="coerce")
+    # check if value ≥ 0.5 = 1
     result.loc[numeric.notna()] = (numeric.loc[numeric.notna()] >= 0.5).astype(int)
 
     # drop NaN

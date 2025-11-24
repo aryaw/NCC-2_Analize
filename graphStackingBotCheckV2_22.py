@@ -109,8 +109,10 @@ df = df.dropna(subset=["SrcAddr", "DstAddr", "Dir", "Proto", "Dur", "TotBytes", 
 log_ram("After DropNA")
 
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
+
 # if Dir missing, usually considered “forward flow” or standard direction >>> set as ->
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
+
 # map Dir to number
 df["Dir"] = df["Dir_raw"].map(dir_map_num).fillna(0).astype(int)
 
@@ -130,7 +132,7 @@ df["DurationRate"]   = df["TotPkts"]  / (df["Dur"] + 0.1)
 
 # How many bytes come from source
 # Bot (client) > usually more outbound traffic
-# C&C server > usually more inbound traffic
+# C&C server > usually more outbound, small inbound traffic
 # Normal host > relatively balanced
 df["FlowIntensity"]  = df["SrcBytes"] / (df["TotBytes"] + 1)
 
@@ -267,6 +269,8 @@ p_test = trained_model.predict_proba(X_test_scaled)[:, 1]
 fpr, tpr, thr_roc = roc_curve(y_test, p_test)
 
 # find the best threshold
+# selecting the best threshold for binary classification based on ROC curve
+# The ROC curve is used because it provides an objective, fair way to select the best threshold, especially in cases such as class imbalance
 best_threshold = thr_roc[np.argmax(np.sqrt(tpr * (1 - fpr)))]
 # because the default threshold = 0.5 is not suitable for unbalanced datasets
 # if using a threshold of 0.5, the model may allow botnets to pass through or trigger too many false alerts > mostly blue
