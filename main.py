@@ -5,7 +5,8 @@ from markdown import markdown
 
 OUTPUT_FOLDER = os.path.join(os.getcwd(), "assets/outputs")
 PRESENT_FOLDER = os.path.join(os.getcwd(), "assets/present")
-PORT = 5000
+PORT = int(os.environ.get("PORT", 5000))
+
 app = Flask(__name__)
 pd.set_option('display.float_format', '{:,.0f}'.format)
 
@@ -457,6 +458,9 @@ def list_files():
     files = sorted(files, reverse=True)
     return jsonify({"files": files})
 
+@app.route('/healthz')
+def health():
+    return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)

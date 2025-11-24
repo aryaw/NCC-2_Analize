@@ -6,7 +6,7 @@ db/
 
 # Assets
 assets/*.html
-assets/outputs/*.html
+# assets/outputs/*.html
 assets/outputs/*.csv
 assets/*.csv
 assets/dataset/*.csv
