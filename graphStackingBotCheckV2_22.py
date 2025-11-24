@@ -315,14 +315,20 @@ for sid in sorted(df["SensorId"].unique()):
     df_s = df[df["SensorId"] == sid].copy()
 
     # inbound traffic per node
+    # groups the DataFrame by DstAddr
+    # counts how many rows belong to each DstAddr
     agg_in = df_s.groupby("DstAddr")["PredictedProb"].agg(["count", "mean"]) \
                  .rename(columns={"count": "in_ct", "mean": "in_prob"})
     
     # outbound traffic per node
+    # how many connections a source IP makes (out_ct)
+    # how suspicious those connections are (out_prob)
     agg_out = df_s.groupby("SrcAddr")["PredictedProb"].agg(["count", "mean"]) \
                   .rename(columns={"count": "out_ct", "mean": "out_prob"})
     
     # combine inbound & outbound statistics
+    # inbound connection count + malicious probability
+    # outbound connection count + malicious probability
     stats = agg_in.join(agg_out, how="outer").fillna(0)
 
     # high in_ratio > frequently receives traffic (server-like)
