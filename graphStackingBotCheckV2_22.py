@@ -245,6 +245,7 @@ with threadpool_limits(limits=1):
         # RF_prob  ─┐
         # ET_prob  ─┼──➤ Logistic Regression ➤ Final Prediction
         # HGB_prob ─┘
+        # stack becomes a fully trained model
         stack.fit(X_train_scaled, y_train)
         trained_model = stack
         print("[Train] Stacking model trained successfully.")
@@ -262,7 +263,7 @@ with threadpool_limits(limits=1):
 
 # evaluation--
 
-# probability predictions
+# predict probability for the test set
 p_test = trained_model.predict_proba(X_test_scaled)[:, 1]
 
 # calculate the ROC curve
