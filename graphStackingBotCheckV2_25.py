@@ -97,8 +97,8 @@ df = con.sql(query).df()
 log_ram("After Load CSV")
 
 df = detect_cnc_from_label(df)
-df = fast_label_to_binary(df)
 df = optimize_dataframe(df)
+df = fast_label_to_binary(df)
 
 df = df.dropna(subset=[
     "SrcAddr","DstAddr","Dir","Proto","Dur","TotBytes","TotPkts","Label"
@@ -116,8 +116,6 @@ df = df.merge(src_total, left_on="SrcAddr", right_index=True, how="left")
 df = df.merge(dst_total, left_on="DstAddr", right_index=True, how="left")
 df["SrcTotalWeight"] = df["SrcTotalWeight"].fillna(0)
 df["DstTotalWeight"] = df["DstTotalWeight"].fillna(0)
-
-# end of edge-weight feature block
 
 dir_map_num = {"->": 1, "<-": -1, "<->": 0}
 df["Dir_raw"] = df["Dir"].astype(str).fillna("->")
@@ -480,15 +478,15 @@ for sid in sorted(df["SensorId"].unique()):
 
         for n in G.nodes():
             if n in top4_set:
-                node_color.append("#F11F1F")         # bright red
+                node_color.append("#F11F1F") # bright red
                 node_size.append(22)
                 node_text.append(n)
             elif n in cc_nodes:
-                node_color.append("#E4A41A")         # yellow
+                node_color.append("#E4A41A") # yellow
                 node_size.append(12)
-                node_text.append("")                 # no label
+                node_text.append("") # no label
             else:
-                node_color.append("#1F77B4")         # blue
+                node_color.append("#1F77B4") # blue
                 node_size.append(6)
                 node_text.append("")
 
