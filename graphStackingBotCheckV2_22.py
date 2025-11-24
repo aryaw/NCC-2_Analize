@@ -1,3 +1,7 @@
+# covariance(TotBytes, TotPkts) > they increase together
+# correlation(DurationRate, Dur) > longer duration reduces packets/sec
+# similarity between IP, c&c/bot
+
 import os
 import gc
 import re
@@ -59,7 +63,7 @@ fileDataTimeStamp, outputdata_dir = setExportDataLocation()
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ""))
 csv_path = os.path.join(PROJECT_ROOT, "assets", "dataset", "NCC2AllSensors_clean.csv")
 
-# -------------------- helper --------------------
+# helper
 memory_log_path = os.path.join(output_dir, f"memory_trace_{fileTimeStamp}.csv")
 # create header
 with open(memory_log_path, "w") as f:
@@ -150,7 +154,7 @@ df["SrcByteRatio"]   = df["SrcBytes"] / (df["TotBytes"] + 1)
 # Type of Service / Quality of Service > packet prio
 # Botnet traffic often does not follow normal priorities (ToS & QoS mismatch)
 # Normal traffic is usually symmetrical/homogeneous
-df["TrafficBalance"] = (df["sTos"] - df["dTos"]).abs()
+df["TrafficBalance"] = (df["sTos"] - df["dTos"]).abs() # absolute number
 
 # Bot scanning/automated traffic > very short duration per packet
 # Normal human users > higher average
@@ -333,9 +337,6 @@ for sid in sorted(df["SensorId"].unique()):
 
     # high in_ratio > frequently receives traffic (server-like)
     stats["in_ratio"] = stats["in_ct"]  / (stats["in_ct"] + stats["out_ct"] + 1e-9) # 1e-9 prevents division by zero
-    
-    # high out_ratio > frequently sends traffic (client-like bot)
-    stats["out_ratio"] = stats["out_ct"] / (stats["in_ct"] + stats["out_ct"] + 1e-9) # 1e-9 prevents division by zero
 
     # degree = total number of connections (edges) that a node (IP) has in the network
     # degree is an important measure in graph analysis
@@ -360,9 +361,15 @@ for sid in sorted(df["SensorId"].unique()):
         cnc_df = stats.loc[cc_nodes].copy()
         cnc_df["SensorId"] = sid
         
+        # cnc_score = malicious probability × traffic behavior (inbound+outbound) × network influence (degree)
+        # log1p(x) = log(1 + x)
+        # makes low degree > small boost
+        # high degree > stronger boost, but not explosive
         cnc_df["cnc_score"] = cnc_df["avg_prob"] * (1 + cnc_df["in_ratio"] + cnc_df["out_ratio"]) * np.log1p(cnc_df["degree"])
 
+        # sort DF descending
         cnc_df = cnc_df.sort_values("cnc_score", ascending=False)
+        # save this DF into a list
         detected_summary.append(cnc_df)
         log_ram(f"Sensor {sid} After C&C Score")
 

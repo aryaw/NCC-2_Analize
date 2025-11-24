@@ -89,6 +89,7 @@ SELECT SrcAddr, DstAddr, Proto, Dir, State, Dur, TotBytes, TotPkts,
 FROM read_csv_auto('{csv_path}', sample_size=-1)
 WHERE Label IS NOT NULL
     AND REGEXP_MATCHES(SrcAddr, '^[0-9.]+$')
+    AND SensorId = 3
 """
 
 print("[Load] Reading dataset...")
@@ -96,8 +97,8 @@ df = con.sql(query).df()
 log_ram("After Load CSV")
 
 df = detect_cnc_from_label(df)
-df = optimize_dataframe(df)
 df = fast_label_to_binary(df)
+df = optimize_dataframe(df)
 
 df = df.dropna(subset=[
     "SrcAddr","DstAddr","Dir","Proto","Dur","TotBytes","TotPkts","Label"
@@ -135,10 +136,25 @@ df["DurationPerPkt"] = df["Dur"] / (df["TotPkts"] + 1)
 df["Intensity"] = df["TotBytes"] / (df["Dur"] + 1)
 
 features = [
-    "Dir","Dur","Proto","TotBytes","TotPkts","sTos","dTos","SrcBytes",
-    "ByteRatio","DurationRate","FlowIntensity","PktByteRatio",
-    "SrcByteRatio","TrafficBalance","DurationPerPkt","Intensity",
-    "EdgeWeight","SrcTotalWeight","DstTotalWeight"
+    "Dir",
+    "Dur",
+    "Proto",
+    "TotBytes",
+    "TotPkts",
+    "sTos",
+    "dTos",
+    "SrcBytes",
+    "ByteRatio",
+    "DurationRate",
+    "FlowIntensity",
+    "PktByteRatio",
+    "SrcByteRatio",
+    "TrafficBalance",
+    "DurationPerPkt",
+    "Intensity",
+    "EdgeWeight",
+    "SrcTotalWeight",
+    "DstTotalWeight"
 ]
 
 X_full = df[features].replace([np.inf, -np.inf], np.nan).fillna(0)
