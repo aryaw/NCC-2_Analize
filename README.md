@@ -1,6 +1,8 @@
+# NCC‑2 Botnet Flow Analysis
 
-# NCC‑2 Botnet Flow Analysis  
-## **Stacking Ensemble + Directed Graph-Based C&C Detection**  
+## **Stacking Ensemble + Directed Graph-Based C&C Detection**
+
+---
 
 ---
 
@@ -112,130 +114,6 @@ Repo/
 
 ---
 
-# System Architecture
-
-## **1. Preprocessing**
-- Load dataset with DuckDB
-- Convert labels → binary bot vs normal (`fast_label_to_binary`)
-- Add `LabelCNC` from ground truth (`detect_cnc_from_label`)
-- Generate engineered network features:
-  - byte ratios
-  - packet/byte density
-  - duration‑normalized features
-  - traffic direction encodings
-  - intensity scoring
-
----
-
-# Machine Learning - Stacking Ensemble
-
-### **Model Structure**
-- **Base models:**
-  - `RandomForestClassifier`
-  - `ExtraTreesClassifier`
-  - `HistGradientBoostingClassifier`
-- **Meta learner:**
-  - Logistic Regression (`predict_proba` stack method)
-
-### **Features Used**
-16 network-traffic engineered features:
-- Direction (`->`, `<-`, `<->`)
-- Duration
-- Protocol (encoded)
-- Total packets / bytes
-- ToS differences
-- Byte ratios
-- Flow intensity
-- Duration per packet
-- Traffic balance
-- Packet-byte ratio
-
-### **Adaptive Threshold**
-A global threshold is computed via:
-
-```
-argmax sqrt(TPR × (1 − FPR))
-```
-
-This gives a **balanced global detector**, preventing false positives.
-
----
-
-# Directed Graph-Based C&C Detection
-
-For each SensorId:
-
-## **1. Aggregation per node**
-For each IP node:
-
-```
-in_ct,  in_prob   = groupby(DstAddr)
-out_ct, out_prob  = groupby(SrcAddr)
-unique peers       = {distinct inbound/outbound nodes}
-```
-
-## **2. Auto CNC Probability Weighting**
-Instead of fixed 0.7/0.3, weight is auto‑calculated:
-
-```
-dominance = mean(out_prob) / (mean(out_prob)+mean(in_prob))
-w_out = 0.5 + 0.5 * dominance
-w_in  = 1 - w_out
-```
-
-This adapts to sensors with heavy outbound botnet traffic.
-
-## **3. CNC Probability**
-```
-cnc_prob = out_prob*w_out + in_prob*w_in
-```
-
-## **4. CNC Score**
-Combines graph + ML signals:
-
-```
-cnc_score =
-   cnc_prob *
-   (1 + out_ratio*1.8 + in_ratio*0.8) *
-   log1p(degree) *
-   log1p(out_unique_dests + 1)
-```
-
-## **5. Strict Rule Auto Threshold**
-```
-auto_strict_thr = mean(cnc_prob) + 1.5*std
-bounded between [0.40, 0.95]
-```
-
-## **6. Percentile Rule**
-Nodes with CNC Score ≥ 95th percentile are candidates.
-
-## **7. Role Classification**
-Labels node as:
-- **C&C**
-- **Normal**
-
-## **8. Export to CSV per sensor**
-- Full stats  
-- CNC probability  
-- CNC score  
-- Role  
-- Reason tags  
-
----
-
-# 3D Graph Visualization
-
-For each sensor, a 3D graph is generated:
-
-- Red nodes → C&C
-- Blue nodes → sampled normal nodes
-- Directed edges drawn without overloading the graph
-- Limits auto-adjust to available RAM
-- Interactive Plotly HTML exported
-
----
-
 # Running the Pipeline
 
 ### **Run full C&C detection + ML + graph generation**
@@ -272,3 +150,214 @@ This includes:
 # License
 This project is for **academic and cybersecurity research only**.  
 You must follow licensing requirements of the NCC‑2 dataset.
+
+---
+
+## Abstract
+
+This work presents a fully integrated, research‑grade pipeline for analyzing the NCC‑2 Simultaneous Botnet Dataset through a dual‑layer methodology that combines **stacking ensemble machine learning** with **directed, topology‑aware graph analytics**. The pipeline is designed to bridge the gap between flow‑level behavioral modeling and node‑level relational inference, enabling the detection of Command‑and‑Control (C&C) infrastructures embedded within large‑scale, multi‑sensor network environments.
+
+The system incorporates rigorous data preprocessing (including regex‑based flow reconstruction), comprehensive feature engineering, adaptive model evaluation, and sensor‑specific probability weighting to enhance detection robustness. In addition, a graph‑driven scoring mechanism captures structural anomalies such as degree imbalance, peer uniqueness, and weighted communication patterns. The resulting framework supports both automated C&C candidate identification and interactive 3D network visualization, providing an analysis workflow suitable for academic research, operational threat hunting, and reproducible scientific studies.
+
+## 1. Introduction
+
+Detecting C&C infrastructure in network traffic is challenging because machine‑learning signals often focus on the **flow level**, whereas C&C behavior is inherently **node‑level and relational**. This pipeline bridges that gap by combining per‑flow ML predictions with graph‑derived structural features (degree, uniqueness, edge weights) to produce node-level C&C detection.
+
+Primary objectives:
+
+* Build a robust botnet detector capable of identifying simultaneous, high‑volume attacks.
+* Provide per‑sensor C&C node candidates backed by ML probabilities and graph‑based evidence.
+
+---
+
+## 2. Data Architecture and Conversion
+
+### 2.1 Data Source
+
+The core dataset is the cleaned CSV file `NCC2AllSensors_clean.csv`, containing bidirectional NetFlow-like records.
+
+### 2.2 Regex-Based Conversion
+
+Original NCC‑2 files may come from binetflow or structured text. A regex-based parsing phase extracts relevant information:
+
+1. Pattern extraction for IPs, ports, states, and metrics.
+2. Cleaning malformed or non-numeric values.
+3. Filtering valid IPv4 addresses using `^[0-9.]+$`.
+
+DuckDB’s `read_csv_auto` is used for large-scale ingestion while maintaining correctness through regex validation.
+
+---
+
+## 3. Preprocessing and Labeling
+
+1. Removal of rows with missing critical fields.
+2. Injection of ground-truth C&C labels via `detect_cnc_from_label`.
+3. Memory reduction using type downcasting.
+4. Binary label conversion (normal = 0, botnet = 1).
+
+---
+
+## 4. Feature Engineering
+
+Focusing on both **flow-level and graph-aware features**.
+
+### 4.1 Core Flow Features
+
+Includes direction, protocol, duration, packet counts, byte counts, and state values.
+
+### 4.2 Ratio & Intensity Features
+
+Designed to normalize traffic patterns:
+
+* ByteRatio
+* DurationRate
+* FlowIntensity
+* PktByteRatio
+* SrcByteRatio
+* TrafficBalance
+* DurationPerPkt
+* Intensity
+
+### 4.3 Graph-Aware Features
+
+* EdgeWeight: number of flows between a source and destination.
+* SrcTotalWeight, DstTotalWeight: total degree weights for each node.
+
+---
+
+## 5. Sampling, Scaling, and Train/Test Split
+
+* Sampling if dataset exceeds limits.
+* Stratified 70/30 split.
+* StandardScaler normalization.
+
+---
+
+## 6. Model Architecture and Training
+
+### 6.1 Stacking Model
+
+Base learners:
+
+* RandomForest
+* ExtraTrees
+* HistGradientBoosting
+
+Meta learner:
+
+* Logistic Regression
+
+### 6.2 Motivation
+
+Tree-based models capture nonlinear flow behaviors, while the meta-learner integrates probabilistic outputs for stability.
+
+### 6.3 Fallback
+
+If stacking fails, a high-capacity RandomForest is used.
+
+---
+
+## 7. Model Thresholding
+
+### 7.1 Adaptive Global Threshold
+
+Chosen by maximizing:
+
+sqrt( TPR × (1 − FPR) )
+
+### 7.2 Purpose
+
+Balances sensitivity and specificity under imbalanced conditions.
+
+---
+
+## 8. Per-Sensor Aggregation & C&C Candidate Selection
+
+Node-level metrics include:
+
+* inbound/outbound counts and probabilities
+* unique source/destination counts
+* total graph weights
+* degree, ratios
+
+### 8.1 Adaptive Weighting
+
+Weights for inbound/outbound probabilities adjusted per sensor.
+
+### 8.2 C&C Probability
+
+cnc_prob = out_prob * w_out + in_prob * w_in
+
+### 8.3 C&C Scoring
+
+Combines cnc_prob with structural metrics such as degree and peer uniqueness.
+
+---
+
+## 9. Candidate Rules
+
+Strict rule:
+
+* cnc_prob > mean + 1.5×std
+* out_ct > 120
+* out_ratio > 0.7
+
+Percentile rule:
+
+* cnc_score ≥ 95th percentile
+* cnc_prob ≥ 0.40
+* out_ct ≥ 20
+
+Final candidate set = union of strict, percentile, and ground-truth nodes.
+
+---
+
+## 10. 3‑D Graph Construction
+
+* Directed weighted graph built per sensor.
+* Node set expanded with 1‑hop neighbors.
+* Memory‑adaptive node/edge limits.
+
+### Rendering
+
+* spring_layout (3‑D)
+* Red: top C&C nodes
+* Yellow: other C&C candidates
+* Blue: normal nodes
+* Interactive Plotly HTML output
+
+---
+
+## 11. Evaluation
+
+Metrics:
+
+* Precision
+* Recall
+* F1-score
+* ROC-AUC
+
+---
+
+## 12. Reproducibility
+
+* Fixed random seeds
+* Thread limiting
+* Full output export to `outputs/` and `outputsData/`
+
+---
+
+## 13. Limitations & Future Work
+
+Limitations:
+
+* Hard dependency on ground-truth C&C labels
+* No temporal modeling
+* Vulnerable to low-and-slow encrypted attacks
+
+Future work:
+
+* Temporal graph neural networks
+* Transformer/LSTM sequence modeling per node
+
+---
